@@ -1,4 +1,3 @@
-// src/App.tsx
 import React, { useEffect, useState, useRef } from "react";
 import {
   createPublicClient,
@@ -53,6 +52,50 @@ interface LogEntry {
   timestamp: string;
 }
 
+// --- EXTRACTED COMPONENT (Fixes the scrolling/focus issue) ---
+const StepCard = ({
+  step, title, desc, isActive, isDone, isDisabled, actionLabel, onAction, address, Icon, extraAction, children, loading
+}: any) => {
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  return (
+    <div className={`step-card ${isActive ? 'active' : ''} ${isDone ? 'success' : ''} ${isDisabled ? 'disabled' : ''}`}>
+      <div className="step-indicator">
+        {isDone ? <CheckIcon /> : step}
+      </div>
+      <div className="step-content">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 className="step-title">{title}</h3>
+          {Icon && <div style={{ color: 'var(--text-muted)' }}><Icon /></div>}
+        </div>
+        <p className="step-desc">{desc}</p>
+
+        {address && (
+          <div className="address-box">
+            <span>{address.slice(0, 8)}...{address.slice(-6)}</span>
+            <button className="copy-btn" onClick={() => copyToClipboard(address)} title="Copy"><CopyIcon /></button>
+          </div>
+        )}
+
+        {children}
+
+        <div style={{ display: 'flex', gap: '10px', marginTop: '0.5rem' }}>
+          {!isDone && onAction && (
+            <button className="action-btn" onClick={onAction} disabled={loading || isDisabled}>
+              {loading && isActive ? "Processing..." : actionLabel}
+            </button>
+          )}
+          {extraAction}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- MAIN APP COMPONENT ---
+
 const App: React.FC = () => {
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
   const [eoaAddress, setEoaAddress] = useState<string>("");
@@ -65,7 +108,7 @@ const App: React.FC = () => {
   const [usdcBalance, setUsdcBalance] = useState("0");
   const [sendAmount, setSendAmount] = useState("");
   const [recipient, setRecipient] = useState("");
-  const [isRefreshing, setIsRefreshing] = useState(false); // New state for visual feedback
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -79,6 +122,7 @@ const App: React.FC = () => {
     if (savedNested) fetchBalances(savedNested);
   }, []);
 
+  // Only scroll to logs if it's NOT a balance update log (optional optimization)
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
@@ -86,11 +130,6 @@ const App: React.FC = () => {
   const addLog = (msg: string, type: 'info' | 'success' | 'error' | 'warning' = 'info') => {
     const timestamp = new Date().toLocaleTimeString();
     setLogs(prev => [...prev, { msg, type, timestamp }]);
-  };
-
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    addLog(`Copied: ${text.slice(0, 6)}...`, 'info');
   };
 
   // --- ACTIONS ---
@@ -213,7 +252,7 @@ const App: React.FC = () => {
 
   const fetchBalances = async (address: string) => {
     try {
-      setIsRefreshing(true); // Visual feedback
+      setIsRefreshing(true);
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
       const eth = await publicClient.getBalance({ address: address as Hex });
       setEthBalance(formatEther(eth));
@@ -227,7 +266,7 @@ const App: React.FC = () => {
         });
         setUsdcBalance(formatUnits(usdc, 6));
       } catch (e) {
-        setUsdcBalance("0"); // Handle case where contract interaction fails (e.g. invalid chain)
+        setUsdcBalance("0");
       }
 
       addLog("Balances updated.", 'info');
@@ -308,43 +347,6 @@ const App: React.FC = () => {
     }
   };
 
-  // -- RENDER HELPERS --
-
-  const StepCard = ({
-    step, title, desc, isActive, isDone, isDisabled, actionLabel, onAction, address, Icon, extraAction, children
-  }: any) => (
-    <div className={`step-card ${isActive ? 'active' : ''} ${isDone ? 'success' : ''} ${isDisabled ? 'disabled' : ''}`}>
-      <div className="step-indicator">
-        {isDone ? <CheckIcon /> : step}
-      </div>
-      <div className="step-content">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 className="step-title">{title}</h3>
-          {Icon && <div style={{ color: 'var(--text-muted)' }}><Icon /></div>}
-        </div>
-        <p className="step-desc">{desc}</p>
-
-        {address && (
-          <div className="address-box">
-            <span>{address.slice(0, 8)}...{address.slice(-6)}</span>
-            <button className="copy-btn" onClick={() => copyToClipboard(address)} title="Copy"><CopyIcon /></button>
-          </div>
-        )}
-
-        {children}
-
-        <div style={{ display: 'flex', gap: '10px', marginTop: '0.5rem' }}>
-          {!isDone && onAction && (
-            <button className="action-btn" onClick={onAction} disabled={loading || isDisabled}>
-              {loading && isActive ? "Processing..." : actionLabel}
-            </button>
-          )}
-          {extraAction}
-        </div>
-      </div>
-    </div>
-  );
-
   return (
     <div className="app-container">
       <header className="header">
@@ -363,6 +365,7 @@ const App: React.FC = () => {
           onAction={handleConnect}
           address={eoaAddress}
           Icon={WalletIcon}
+          loading={loading}
         />
         <StepCard
           step={2}
@@ -375,6 +378,7 @@ const App: React.FC = () => {
           onAction={createPrimarySafe}
           address={primarySafeAddress}
           Icon={SafeIcon}
+          loading={loading}
         />
         <StepCard
           step={3}
@@ -387,6 +391,7 @@ const App: React.FC = () => {
           onAction={createNestedSafe}
           address={nestedSafeAddress}
           Icon={NestedIcon}
+          loading={loading}
         />
 
         <StepCard
@@ -399,6 +404,7 @@ const App: React.FC = () => {
           actionLabel="Run Verification"
           onAction={verifyOwnership}
           Icon={VerifyIcon}
+          loading={loading}
           extraAction={
             nestedSafeAddress ? (
               <a
@@ -414,7 +420,7 @@ const App: React.FC = () => {
           }
         />
 
-        {/* Step 5: Dashboard with Prominent Refresh Button */}
+        {/* Step 5: Dashboard */}
         {nestedSafeAddress && (
           <StepCard
             step={5}
@@ -424,6 +430,7 @@ const App: React.FC = () => {
             isDone={false}
             isDisabled={false}
             Icon={DashboardIcon}
+            loading={loading}
             extraAction={
               <button
                 className="action-btn"
