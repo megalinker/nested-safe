@@ -20,6 +20,7 @@ import { createPimlicoClient } from "permissionless/clients/pimlico";
 import Safe, { type SafeAccountConfig } from "@safe-global/protocol-kit";
 
 import { connectPhantom } from "./utils/phantom";
+import { registerPasskey, authenticatePasskey } from "./utils/webauthn";
 import "./App.css";
 
 // --- CONFIG ---
@@ -43,8 +44,8 @@ const SafeIcon = () => <svg width="20" height="20" fill="none" stroke="currentCo
 const NestedIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>;
 const VerifyIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>;
 const CheckIcon = () => <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" /></svg>;
-const LinkIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>;
 const CopyIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>;
+const LinkIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>;
 const DashboardIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>;
 const RefreshIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>;
 const KeyIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" /></svg>;
@@ -104,6 +105,7 @@ const App: React.FC = () => {
   const [primarySafeAddress, setPrimarySafeAddress] = useState<string>("");
   const [nestedSafeAddress, setNestedSafeAddress] = useState<string>("");
   const [passkeyAddress, setPasskeyAddress] = useState<string>("");
+  const [passkeyId, setPasskeyId] = useState<string>(""); // Store the browser ID
   const [isVerified, setIsVerified] = useState(false);
 
   // Dashboard State
@@ -124,10 +126,12 @@ const App: React.FC = () => {
     const savedPrimary = localStorage.getItem("primarySafeAddress");
     const savedNested = localStorage.getItem("nestedSafeAddress");
     const savedPasskey = localStorage.getItem("passkeyAddress");
+    const savedPasskeyId = localStorage.getItem("passkeyId");
 
     if (savedPrimary) setPrimarySafeAddress(savedPrimary);
     if (savedNested) setNestedSafeAddress(savedNested);
     if (savedPasskey) setPasskeyAddress(savedPasskey);
+    if (savedPasskeyId) setPasskeyId(savedPasskeyId);
 
     if (savedNested) fetchBalances(savedNested);
   }, []);
@@ -165,13 +169,24 @@ const App: React.FC = () => {
     try {
       setLoading(true);
       addLog("Initializing Primary Safe (ERC-4337)...", 'info');
+
+      // 1. Get or Generate a random salt for the Primary Safe
+      let salt = localStorage.getItem("primarySafeSalt");
+      if (!salt) {
+        salt = BigInt(Date.now()).toString(); // Use timestamp as unique salt
+        localStorage.setItem("primarySafeSalt", salt);
+      }
+
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+
       const safeAccount = await toSafeSmartAccount({
         client: publicClient,
         owners: [walletClient],
         entryPoint: { address: entryPoint07Address, version: "0.7" },
         version: "1.4.1",
+        saltNonce: BigInt(salt),
       });
+
       const address = safeAccount.address;
       setPrimarySafeAddress(address);
       localStorage.setItem("primarySafeAddress", address);
@@ -188,18 +203,33 @@ const App: React.FC = () => {
     try {
       setLoading(true);
       addLog("Generating Nested Safe Payload...", 'info');
+
+      // 1. Re-initialize Primary Safe to ensure we are using the correct signer context
+      // We need to fetch the primary salt to reconstruct the 4337 account wrapper correctly
+      const primarySalt = localStorage.getItem("primarySafeSalt") || "0";
+
+      // 2. Get or Generate a random salt for the Nested Safe
+      let nestedSalt = localStorage.getItem("nestedSafeSalt");
+      if (!nestedSalt) {
+        nestedSalt = Date.now().toString(); // Timestamp string
+        localStorage.setItem("nestedSafeSalt", nestedSalt);
+      }
+
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
       const pimlicoClient = createPimlicoClient({
         transport: http(PIMLICO_URL),
         entryPoint: { address: entryPoint07Address, version: "0.7" },
       });
+
       const safeAccount = await toSafeSmartAccount({
         client: publicClient,
         owners: [walletClient],
         entryPoint: { address: entryPoint07Address, version: "0.7" },
         version: "1.4.1",
         address: primarySafeAddress as Hex,
+        saltNonce: BigInt(primarySalt)
       });
+
       const smartAccountClient = createSmartAccountClient({
         account: safeAccount,
         chain: baseSepolia,
@@ -209,9 +239,21 @@ const App: React.FC = () => {
           estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast,
         },
       });
+
       const provider = (window as any).phantom?.ethereum || (window as any).ethereum;
       const safeAccountConfig: SafeAccountConfig = { owners: [primarySafeAddress], threshold: 1 };
-      const protocolKit = await Safe.init({ provider, signer: eoaAddress, predictedSafe: { safeAccountConfig } });
+
+      const protocolKit = await Safe.init({
+        provider,
+        signer: eoaAddress,
+        predictedSafe: {
+          safeAccountConfig,
+          safeDeploymentConfig: {
+            saltNonce: nestedSalt
+          }
+        }
+      });
+
       const predictedAddr = await protocolKit.getAddress();
       const deploymentTx = await protocolKit.createSafeDeploymentTransaction();
 
@@ -285,14 +327,24 @@ const App: React.FC = () => {
     }
   };
 
-  // --- NEW: Add Passkey (Secondary Signer) ---
+  // --- ACTIONS WITH REAL PASSKEY PROMPTS ---
+
   const addPasskeyOwner = async () => {
     if (!walletClient || !primarySafeAddress) return;
     try {
       setLoading(true);
-      addLog("Generating Passkey/Device Key...", 'info');
+      addLog("Prompting browser for Passkey creation...", 'warning');
 
-      // 1. Generate Key
+      // 1. Trigger Native Passkey Creation (FaceID/TouchID)
+      const newCredId = await registerPasskey("SafeOwner");
+      // Store the Credential ID to look it up later
+      setPasskeyId(newCredId);
+      localStorage.setItem("passkeyId", newCredId);
+      addLog("Passkey Created via Browser!", 'success');
+
+      // 2. Generate Signer Key
+      // (Note: In a full prod app, you'd use the P256 key from the passkey directly. 
+      //  Here we gate a local key with the passkey prompt to ensure valid UX)
       let privKey = localStorage.getItem("passkey_priv") as Hex | null;
       if (!privKey) {
         privKey = generatePrivateKey();
@@ -300,17 +352,15 @@ const App: React.FC = () => {
       }
       const account = privateKeyToAccount(privKey);
       const newOwner = account.address;
+      addLog(`Generated Safe Signer: ${newOwner}`, 'info');
 
-      addLog(`Generated Signer: ${newOwner}`, 'info');
-
-      // 2. Add Owner Transaction (Primary Safe -> addOwnerWithThreshold -> Self)
+      // 3. Add Owner on Chain
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
       const pimlicoClient = createPimlicoClient({
         transport: http(PIMLICO_URL),
         entryPoint: { address: entryPoint07Address, version: "0.7" },
       });
 
-      // We sign this with PHANTOM (current owner)
       const safeAccount = await toSafeSmartAccount({
         client: publicClient,
         owners: [walletClient],
@@ -332,11 +382,10 @@ const App: React.FC = () => {
       const addOwnerData = encodeFunctionData({
         abi: SAFE_ABI,
         functionName: "addOwnerWithThreshold",
-        args: [newOwner, 1n] // Threshold stays 1 (both can sign)
+        args: [newOwner, 1n]
       });
 
-      addLog("Sending Add Owner UserOp...", 'info');
-
+      addLog("Signing with Phantom to add new owner...", 'info');
       const txHash = await smartAccountClient.sendTransaction({
         to: primarySafeAddress as Hex,
         value: 0n,
@@ -355,7 +404,6 @@ const App: React.FC = () => {
     }
   };
 
-  // --- MODIFIED: Send with Signer Selection ---
   const sendFromNestedSafe = async () => {
     if (!walletClient || !primarySafeAddress || !nestedSafeAddress) return;
     try {
@@ -365,26 +413,35 @@ const App: React.FC = () => {
       const signerName = selectedSigner === 'phantom' ? "Phantom" : "Passkey";
       addLog(`Preparing to send ${sendAmount} ETH using ${signerName}...`, 'info');
 
+      // --- PASSKEY GATE ---
+      let ownerAccount;
+      if (selectedSigner === 'phantom') {
+        ownerAccount = walletClient;
+      } else {
+        // Trigger Native Browser Prompt
+        if (!passkeyId) throw new Error("No passkey ID found");
+        addLog("Please authenticate with FaceID/TouchID...", 'warning');
+
+        // This halts execution until user touches sensor
+        const isAuthenticated = await authenticatePasskey(passkeyId);
+
+        if (!isAuthenticated) throw new Error("Biometric verification failed");
+        addLog("Biometric verified!", 'success');
+
+        const privKey = localStorage.getItem("passkey_priv") as Hex;
+        ownerAccount = privateKeyToAccount(privKey);
+      }
+
+      // --- EXECUTE TRANSACTION ---
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
       const pimlicoClient = createPimlicoClient({
         transport: http(PIMLICO_URL),
         entryPoint: { address: entryPoint07Address, version: "0.7" },
       });
 
-      // --- DYNAMIC SIGNER LOGIC ---
-      let ownerAccount;
-      if (selectedSigner === 'phantom') {
-        ownerAccount = walletClient; // Use connected Phantom
-      } else {
-        const privKey = localStorage.getItem("passkey_priv") as Hex;
-        if (!privKey) throw new Error("No passkey found. Add one first.");
-        ownerAccount = privateKeyToAccount(privKey); // Use local key
-      }
-
-      // Initialize Smart Account with the SELECTED Signer
       const safeAccount = await toSafeSmartAccount({
         client: publicClient,
-        owners: [ownerAccount], // <--- This decides who signs the UserOp
+        owners: [ownerAccount],
         entryPoint: { address: entryPoint07Address, version: "0.7" },
         version: "1.4.1",
         address: primarySafeAddress as Hex,
