@@ -20,9 +20,9 @@ The app builds an ownership hierarchy:
 
 ```mermaid
 graph TD
-    A[Phantom Wallet (EOA)] -->|Signer| B(Primary Safe / ERC-4337)
-    B -->|Owner| C(Nested Safe / Standard Safe)
-    P[Pimlico Paymaster] -.->|Sponsors Gas| B
+    A["Phantom Wallet (EOA)"] -->|Signer| B("Primary Safe / ERC-4337")
+    B -->|Owner| C("Nested Safe / Standard Safe")
+    P["Pimlico Paymaster"] -.->|Sponsors Gas| B
 ```
 
 1.  **EOA:** Your Phantom wallet key. It only signs messages.
