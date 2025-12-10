@@ -11,6 +11,7 @@ import {
   parseEther,
   formatUnits
 } from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { entryPoint07Address } from "viem/account-abstraction";
 import { createSmartAccountClient } from "permissionless";
@@ -28,7 +29,8 @@ const PUBLIC_RPC = "https://sepolia.base.org";
 const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
 const SAFE_ABI = parseAbi([
-  "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool success)"
+  "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool success)",
+  "function addOwnerWithThreshold(address owner, uint256 _threshold) public"
 ]);
 
 const ERC20_ABI = parseAbi([
@@ -41,10 +43,11 @@ const SafeIcon = () => <svg width="20" height="20" fill="none" stroke="currentCo
 const NestedIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>;
 const VerifyIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>;
 const CheckIcon = () => <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" /></svg>;
-const CopyIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>;
 const LinkIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>;
+const CopyIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>;
 const DashboardIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>;
 const RefreshIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>;
+const KeyIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" /></svg>;
 
 interface LogEntry {
   msg: string;
@@ -52,7 +55,6 @@ interface LogEntry {
   timestamp: string;
 }
 
-// --- EXTRACTED COMPONENT (Fixes the scrolling/focus issue) ---
 const StepCard = ({
   step, title, desc, isActive, isDone, isDisabled, actionLabel, onAction, address, Icon, extraAction, children, loading
 }: any) => {
@@ -101,6 +103,7 @@ const App: React.FC = () => {
   const [eoaAddress, setEoaAddress] = useState<string>("");
   const [primarySafeAddress, setPrimarySafeAddress] = useState<string>("");
   const [nestedSafeAddress, setNestedSafeAddress] = useState<string>("");
+  const [passkeyAddress, setPasskeyAddress] = useState<string>("");
   const [isVerified, setIsVerified] = useState(false);
 
   // Dashboard State
@@ -110,6 +113,9 @@ const App: React.FC = () => {
   const [recipient, setRecipient] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Signer Selection
+  const [selectedSigner, setSelectedSigner] = useState<'phantom' | 'passkey'>('phantom');
+
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -117,12 +123,15 @@ const App: React.FC = () => {
   useEffect(() => {
     const savedPrimary = localStorage.getItem("primarySafeAddress");
     const savedNested = localStorage.getItem("nestedSafeAddress");
+    const savedPasskey = localStorage.getItem("passkeyAddress");
+
     if (savedPrimary) setPrimarySafeAddress(savedPrimary);
     if (savedNested) setNestedSafeAddress(savedNested);
+    if (savedPasskey) setPasskeyAddress(savedPasskey);
+
     if (savedNested) fetchBalances(savedNested);
   }, []);
 
-  // Only scroll to logs if it's NOT a balance update log (optional optimization)
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
@@ -268,7 +277,6 @@ const App: React.FC = () => {
       } catch (e) {
         setUsdcBalance("0");
       }
-
       addLog("Balances updated.", 'info');
     } catch (e) {
       console.error("Balance fetch failed", e);
@@ -277,12 +285,85 @@ const App: React.FC = () => {
     }
   };
 
+  // --- NEW: Add Passkey (Secondary Signer) ---
+  const addPasskeyOwner = async () => {
+    if (!walletClient || !primarySafeAddress) return;
+    try {
+      setLoading(true);
+      addLog("Generating Passkey/Device Key...", 'info');
+
+      // 1. Generate Key
+      let privKey = localStorage.getItem("passkey_priv") as Hex | null;
+      if (!privKey) {
+        privKey = generatePrivateKey();
+        localStorage.setItem("passkey_priv", privKey);
+      }
+      const account = privateKeyToAccount(privKey);
+      const newOwner = account.address;
+
+      addLog(`Generated Signer: ${newOwner}`, 'info');
+
+      // 2. Add Owner Transaction (Primary Safe -> addOwnerWithThreshold -> Self)
+      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const pimlicoClient = createPimlicoClient({
+        transport: http(PIMLICO_URL),
+        entryPoint: { address: entryPoint07Address, version: "0.7" },
+      });
+
+      // We sign this with PHANTOM (current owner)
+      const safeAccount = await toSafeSmartAccount({
+        client: publicClient,
+        owners: [walletClient],
+        entryPoint: { address: entryPoint07Address, version: "0.7" },
+        version: "1.4.1",
+        address: primarySafeAddress as Hex,
+      });
+
+      const smartAccountClient = createSmartAccountClient({
+        account: safeAccount,
+        chain: baseSepolia,
+        bundlerTransport: http(PIMLICO_URL),
+        paymaster: pimlicoClient,
+        userOperation: {
+          estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast,
+        },
+      });
+
+      const addOwnerData = encodeFunctionData({
+        abi: SAFE_ABI,
+        functionName: "addOwnerWithThreshold",
+        args: [newOwner, 1n] // Threshold stays 1 (both can sign)
+      });
+
+      addLog("Sending Add Owner UserOp...", 'info');
+
+      const txHash = await smartAccountClient.sendTransaction({
+        to: primarySafeAddress as Hex,
+        value: 0n,
+        data: addOwnerData,
+      });
+
+      addLog(`Owner Added! Tx: ${txHash}`, 'success');
+      setPasskeyAddress(newOwner);
+      localStorage.setItem("passkeyAddress", newOwner);
+
+    } catch (e: any) {
+      console.error(e);
+      addLog(`Add Owner Failed: ${e.message}`, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- MODIFIED: Send with Signer Selection ---
   const sendFromNestedSafe = async () => {
     if (!walletClient || !primarySafeAddress || !nestedSafeAddress) return;
     try {
       if (!sendAmount || !recipient) throw new Error("Enter amount and recipient");
       setLoading(true);
-      addLog(`Preparing to send ${sendAmount} ETH from Nested Safe...`, 'info');
+
+      const signerName = selectedSigner === 'phantom' ? "Phantom" : "Passkey";
+      addLog(`Preparing to send ${sendAmount} ETH using ${signerName}...`, 'info');
 
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
       const pimlicoClient = createPimlicoClient({
@@ -290,9 +371,20 @@ const App: React.FC = () => {
         entryPoint: { address: entryPoint07Address, version: "0.7" },
       });
 
+      // --- DYNAMIC SIGNER LOGIC ---
+      let ownerAccount;
+      if (selectedSigner === 'phantom') {
+        ownerAccount = walletClient; // Use connected Phantom
+      } else {
+        const privKey = localStorage.getItem("passkey_priv") as Hex;
+        if (!privKey) throw new Error("No passkey found. Add one first.");
+        ownerAccount = privateKeyToAccount(privKey); // Use local key
+      }
+
+      // Initialize Smart Account with the SELECTED Signer
       const safeAccount = await toSafeSmartAccount({
         client: publicClient,
-        owners: [walletClient],
+        owners: [ownerAccount], // <--- This decides who signs the UserOp
         entryPoint: { address: entryPoint07Address, version: "0.7" },
         version: "1.4.1",
         address: primarySafeAddress as Hex,
@@ -328,7 +420,7 @@ const App: React.FC = () => {
         ]
       });
 
-      addLog("Authorizing via Primary Safe...", 'info');
+      addLog(`Authorizing via Primary Safe (${signerName})...`, 'info');
 
       const txHash = await smartAccountClient.sendTransaction({
         to: nestedSafeAddress as Hex,
@@ -436,17 +528,35 @@ const App: React.FC = () => {
                 className="action-btn"
                 onClick={() => fetchBalances(nestedSafeAddress)}
                 disabled={isRefreshing}
-                style={{
-                  background: 'var(--surface-hover)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}
+                style={{ background: 'var(--surface-hover)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
               >
                 {isRefreshing ? "Refreshing..." : "Refresh"} <RefreshIcon />
               </button>
             }
           >
+            {/* Signer Management Section */}
+            <div style={{ margin: '1rem 0', padding: '1rem', border: '1px solid var(--border-color)', borderRadius: '8px', background: 'rgba(255,255,255,0.02)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h4 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <KeyIcon /> Signer Settings
+                </h4>
+                {!passkeyAddress ? (
+                  <button
+                    className="action-btn"
+                    onClick={addPasskeyOwner}
+                    disabled={loading}
+                    style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                  >
+                    Add Passkey / Device Key
+                  </button>
+                ) : (
+                  <span style={{ fontSize: '0.8rem', color: 'var(--success-color)' }}>
+                    Passkey Active: {passkeyAddress.slice(0, 6)}...
+                  </span>
+                )}
+              </div>
+            </div>
+
             <div className="dashboard-grid">
               <div className="balance-item">
                 <div className="balance-label">ETH Balance</div>
@@ -459,7 +569,43 @@ const App: React.FC = () => {
             </div>
 
             <div className="transfer-box">
-              <h4>Transfer ETH from Nested Safe</h4>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                <h4 style={{ margin: 0 }}>Transfer ETH</h4>
+
+                {/* Signer Toggle */}
+                <div style={{ display: 'flex', gap: '0.5rem', background: 'var(--bg-color)', padding: '2px', borderRadius: '6px' }}>
+                  <button
+                    onClick={() => setSelectedSigner('phantom')}
+                    style={{
+                      border: 'none',
+                      background: selectedSigner === 'phantom' ? 'var(--primary-color)' : 'transparent',
+                      color: selectedSigner === 'phantom' ? 'white' : 'var(--text-muted)',
+                      borderRadius: '4px',
+                      padding: '4px 8px',
+                      cursor: 'pointer',
+                      fontSize: '0.8rem'
+                    }}
+                  >
+                    Phantom
+                  </button>
+                  <button
+                    onClick={() => setSelectedSigner('passkey')}
+                    disabled={!passkeyAddress}
+                    style={{
+                      border: 'none',
+                      background: selectedSigner === 'passkey' ? 'var(--primary-color)' : 'transparent',
+                      color: !passkeyAddress ? 'rgba(255,255,255,0.2)' : (selectedSigner === 'passkey' ? 'white' : 'var(--text-muted)'),
+                      borderRadius: '4px',
+                      padding: '4px 8px',
+                      cursor: !passkeyAddress ? 'not-allowed' : 'pointer',
+                      fontSize: '0.8rem'
+                    }}
+                  >
+                    Passkey
+                  </button>
+                </div>
+              </div>
+
               <div className="input-row">
                 <input
                   placeholder="Amount (ETH)"
@@ -479,7 +625,7 @@ const App: React.FC = () => {
                 disabled={loading}
                 style={{ width: '100%', marginTop: '10px' }}
               >
-                {loading ? "Sending..." : "Authorize & Send"}
+                {loading ? "Processing..." : `Sign with ${selectedSigner === 'phantom' ? 'Phantom' : 'Passkey'} & Send`}
               </button>
             </div>
           </StepCard>
