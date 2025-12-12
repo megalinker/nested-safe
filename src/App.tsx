@@ -25,6 +25,7 @@ import "./App.css";
 const PIMLICO_API_KEY = import.meta.env.VITE_PIMLICO_API_KEY;
 const PIMLICO_URL = `https://api.pimlico.io/v2/base-sepolia/rpc?apikey=${PIMLICO_API_KEY}`;
 const PUBLIC_RPC = "https://sepolia.base.org";
+const SAFE_TX_SERVICE_URL = "https://safe-transaction-base-sepolia.safe.global/api/v1";
 const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
 const SAFE_ABI = parseAbi([
@@ -46,10 +47,30 @@ const Icons = {
   Refresh: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>,
   Plus: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
   ChevronDown: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9" /></svg>,
+  ExternalLink: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>,
 };
 
 interface StoredSafe { address: string; salt: string; name: string; }
 interface LogEntry { msg: string; type: 'info' | 'success' | 'error'; timestamp: string; }
+
+interface Transfer {
+  type: string;
+  value: string;
+  tokenAddress: string | null;
+  tokenInfo: any;
+}
+
+interface SafeTx {
+  txType: 'MULTISIG_TRANSACTION' | 'ETHEREUM_TRANSACTION' | 'MODULE_TRANSACTION';
+  executionDate: string;
+  to: string;
+  value: string;
+  data: string | null;
+  isSuccessful?: boolean;
+  transactionHash?: string;
+  from?: string;
+  transfers?: Transfer[]; // Added transfers array definition
+}
 
 // --- COMPONENT: SAFE ITEM ---
 const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh }: {
@@ -113,6 +134,8 @@ const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh 
   );
 };
 
+// --- MAIN APP ---
+
 const App: React.FC = () => {
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
   const [eoaAddress, setEoaAddress] = useState<string>("");
@@ -123,13 +146,15 @@ const App: React.FC = () => {
   const [selectedSafeAddr, setSelectedSafeAddr] = useState<string>("");
   const [selectedNestedSafeAddr, setSelectedNestedSafeAddr] = useState<string>("");
 
-  const [activeTab, setActiveTab] = useState<'transfer' | 'owners' | 'settings'>('transfer');
+  const [activeTab, setActiveTab] = useState<'transfer' | 'owners' | 'history' | 'settings'>('transfer');
 
   // Data State
   const [nestedOwners, setNestedOwners] = useState<string[]>([]);
   const [nestedThreshold, setNestedThreshold] = useState<number>(0);
   const [ethBalance, setEthBalance] = useState<string | null>(null);
   const [usdcBalance, setUsdcBalance] = useState<string | null>(null);
+  const [txHistory, setTxHistory] = useState<SafeTx[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -167,6 +192,12 @@ const App: React.FC = () => {
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'history' && selectedNestedSafeAddr) {
+      fetchHistory(selectedNestedSafeAddr);
+    }
+  }, [activeTab, selectedNestedSafeAddr]);
 
   const isCurrentSafeOwner = useMemo(() => {
     if (!selectedSafeAddr || nestedOwners.length === 0) return false;
@@ -271,12 +302,6 @@ const App: React.FC = () => {
     if (!address) return;
     setLoading(true);
 
-    // --- RESET STATE TO AVOID STALE DATA ---
-    // Balances passed to list items will now be null, triggering loading view
-    // Do NOT reset ethBalance/usdcBalance here if you want to keep them while loading? 
-    // No, user specifically requested to avoid stale data.
-    // We already reset them in the onClick handler, but repeating here is safe.
-
     const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
 
     try {
@@ -297,10 +322,25 @@ const App: React.FC = () => {
     try {
       const thresh = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "getThreshold" });
       setNestedThreshold(Number(thresh));
-      setNewThresholdInput(Number(thresh)); // default input to current
+      setNewThresholdInput(Number(thresh));
     } catch { setNestedThreshold(1); }
 
     setLoading(false);
+  };
+
+  const fetchHistory = async (address: string) => {
+    setLoadingHistory(true);
+    try {
+      const response = await fetch(`${SAFE_TX_SERVICE_URL}/safes/${address}/all-transactions/?ordering=-timestamp&limit=20`);
+      if (!response.ok) throw new Error("History fetch failed");
+      const data = await response.json();
+      setTxHistory(data.results || []);
+    } catch (e) {
+      console.error(e);
+      setTxHistory([]);
+    } finally {
+      setLoadingHistory(false);
+    }
   };
 
   const executeTx = async (to: string, val: bigint, data: Hex) => {
@@ -335,7 +375,10 @@ const App: React.FC = () => {
 
       const hash = await smartClient.sendTransaction({ to: selectedNestedSafeAddr as Hex, value: 0n, data: callData });
       addLog(`TX Sent: ${hash}`, 'success');
-      setTimeout(() => fetchData(selectedNestedSafeAddr), 3000);
+      setTimeout(() => {
+        fetchData(selectedNestedSafeAddr);
+        if (activeTab === 'history') fetchHistory(selectedNestedSafeAddr);
+      }, 4000);
     } catch (e: any) { addLog(e.message, 'error'); } finally { setLoading(false); }
   };
 
@@ -425,19 +468,19 @@ const App: React.FC = () => {
                     safe={safe}
                     isSelected={selectedNestedSafeAddr === safe.address}
                     onClick={() => {
-                      // Immediately clear data to show loading state
                       setEthBalance(null);
                       setUsdcBalance(null);
                       setNestedOwners([]);
                       setNestedThreshold(0);
-                      // Update selection
+                      setTxHistory([]); // Reset history on switch
                       setSelectedNestedSafeAddr(safe.address);
-                      // Fetch new data
                       fetchData(safe.address);
                     }}
                     type="nested"
-                    onRefresh={() => fetchData(safe.address)}
-                    // Pass current balance or null if loading (not matching current selection yet)
+                    onRefresh={() => {
+                      fetchData(safe.address);
+                      if (activeTab === 'history') fetchHistory(safe.address);
+                    }}
                     balanceInfo={selectedNestedSafeAddr === safe.address ? {
                       eth: ethBalance !== null ? parseFloat(ethBalance).toFixed(4) : null,
                       usdc: usdcBalance !== null ? parseFloat(usdcBalance).toFixed(2) : null
@@ -452,6 +495,7 @@ const App: React.FC = () => {
             <div className="panel-header">
               <button className={`tab-btn ${activeTab === 'transfer' ? 'active' : ''}`} onClick={() => setActiveTab('transfer')}>Transfer</button>
               <button className={`tab-btn ${activeTab === 'owners' ? 'active' : ''}`} onClick={() => setActiveTab('owners')}>Owners</button>
+              <button className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</button>
               <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>Settings</button>
             </div>
 
@@ -508,7 +552,6 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* --- NEW THRESHOLD SECTION --- */}
                   <hr style={{ margin: '2rem 0', borderColor: 'var(--border)' }} />
                   <div className="section-label">Security Threshold</div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-1)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--border)' }}>
@@ -533,6 +576,73 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 </>
+              )}
+
+              {activeTab === 'history' && (
+                <div>
+                  <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Recent Transactions</span>
+                    <button onClick={() => fetchHistory(selectedNestedSafeAddr)} className="icon-btn"><Icons.Refresh /></button>
+                  </div>
+
+                  {loadingHistory ? (
+                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '2rem' }}>Loading history...</div>
+                  ) : txHistory.length === 0 ? (
+                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '2rem' }}>No transactions found.</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {txHistory.map((tx, i) => {
+                        const isIncoming = tx.txType === 'ETHEREUM_TRANSACTION';
+
+                        // --- FIX: Calculate actual value by summing transfers if needed ---
+                        let valueBigInt = BigInt(0);
+
+                        if (isIncoming && tx.transfers) {
+                          // Sum up all ETH transfers in this transaction
+                          tx.transfers.forEach(t => {
+                            if (t.type === 'ETHER_TRANSFER') {
+                              valueBigInt += BigInt(t.value);
+                            }
+                          });
+                        } else if (tx.value) {
+                          valueBigInt = BigInt(tx.value);
+                        }
+
+                        // Skip if truly 0 (unless it's an execution)
+                        if (isIncoming && valueBigInt === 0n) return null;
+
+                        const amount = formatEther(valueBigInt);
+                        const date = new Date(tx.executionDate).toLocaleDateString();
+
+                        // Identify known addresses
+                        let label = isIncoming ? "Received ETH" : "Executed TX";
+                        const counterParty = isIncoming ? tx.from : tx.to;
+                        const matchedSafe = mySafes.find(s => s.address.toLowerCase() === counterParty?.toLowerCase()) ||
+                          myNestedSafes.find(s => s.address.toLowerCase() === counterParty?.toLowerCase());
+
+                        return (
+                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: 'var(--surface-1)', borderRadius: '8px', borderLeft: isIncoming ? '4px solid var(--success)' : '4px solid var(--primary)' }}>
+                            <div>
+                              <div style={{ fontWeight: '600', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                {label}
+                                {matchedSafe && <span className="owner-tag" style={{ background: 'rgba(255,255,255,0.1)', color: 'white' }}>{matchedSafe.name}</span>}
+                              </div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{date}</div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontWeight: '600' }}>{amount} ETH</div>
+                              {tx.transactionHash && (
+                                <a href={`https://sepolia.basescan.org/tx/${tx.transactionHash}`} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px', justifyContent: 'flex-end' }}>
+                                  Explorer <Icons.ExternalLink />
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
               )}
 
               {activeTab === 'settings' && (
