@@ -32,8 +32,12 @@ const SAFE_ABI = parseAbi([
   "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool success)",
   "function addOwnerWithThreshold(address owner, uint256 _threshold) public",
   "function changeThreshold(uint256 _threshold) public",
+  "function approveHash(bytes32 hashToApprove) public",
   "function getOwners() view returns (address[])",
-  "function getThreshold() view returns (uint256)"
+  "function getThreshold() view returns (uint256)",
+  "function approvedHashes(address owner, bytes32 hash) view returns (uint256)",
+  "function nonce() view returns (uint256)",
+  "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 _nonce) view returns (bytes32)"
 ]);
 const ERC20_ABI = parseAbi(["function balanceOf(address owner) view returns (uint256)"]);
 
@@ -49,6 +53,8 @@ const Icons = {
   ChevronDown: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9" /></svg>,
   ExternalLink: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>,
 };
+
+// --- TYPES ---
 
 interface StoredSafe { address: string; salt: string; name: string; }
 interface LogEntry { msg: string; type: 'info' | 'success' | 'error'; timestamp: string; }
@@ -69,10 +75,20 @@ interface SafeTx {
   isSuccessful?: boolean;
   transactionHash?: string;
   from?: string;
-  transfers?: Transfer[]; // Added transfers array definition
+  transfers?: Transfer[];
 }
 
-// --- COMPONENT: SAFE ITEM ---
+interface QueuedTx {
+  hash: string;
+  to: string;
+  value: string;
+  data: string;
+  nonce: number;
+  description: string;
+}
+
+// --- COMPONENTS ---
+
 const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh }: {
   safe: StoredSafe,
   isSelected: boolean,
@@ -137,6 +153,7 @@ const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh 
 // --- MAIN APP ---
 
 const App: React.FC = () => {
+  // State
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
   const [eoaAddress, setEoaAddress] = useState<string>("");
 
@@ -146,15 +163,20 @@ const App: React.FC = () => {
   const [selectedSafeAddr, setSelectedSafeAddr] = useState<string>("");
   const [selectedNestedSafeAddr, setSelectedNestedSafeAddr] = useState<string>("");
 
-  const [activeTab, setActiveTab] = useState<'transfer' | 'owners' | 'history' | 'settings'>('transfer');
+  const [activeTab, setActiveTab] = useState<'transfer' | 'owners' | 'queue' | 'history' | 'settings'>('transfer');
 
   // Data State
   const [nestedOwners, setNestedOwners] = useState<string[]>([]);
   const [nestedThreshold, setNestedThreshold] = useState<number>(0);
+  const [nestedNonce, setNestedNonce] = useState<number>(0);
   const [ethBalance, setEthBalance] = useState<string | null>(null);
   const [usdcBalance, setUsdcBalance] = useState<string | null>(null);
   const [txHistory, setTxHistory] = useState<SafeTx[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Queue State
+  const [queuedTxs, setQueuedTxs] = useState<QueuedTx[]>([]);
+  const [approvalsMap, setApprovalsMap] = useState<Record<string, string[]>>({}); // TxHash -> Array of Owners who approved
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -165,6 +187,8 @@ const App: React.FC = () => {
   const [sendAmount, setSendAmount] = useState("");
   const [newOwnerInput, setNewOwnerInput] = useState("");
   const [newThresholdInput, setNewThresholdInput] = useState<number>(1);
+
+  // --- INITIALIZATION ---
 
   useEffect(() => {
     const savedSafes = localStorage.getItem("mySafes");
@@ -191,13 +215,21 @@ const App: React.FC = () => {
         fetchData(oldNested);
       }
     }
+
+    const storedQueue = localStorage.getItem("localTxQueue");
+    if (storedQueue) setQueuedTxs(JSON.parse(storedQueue));
   }, []);
 
+  // Fetch History when history tab selected
   useEffect(() => {
     if (activeTab === 'history' && selectedNestedSafeAddr) {
       fetchHistory(selectedNestedSafeAddr);
     }
-  }, [activeTab, selectedNestedSafeAddr]);
+    // Check approvals when Queue tab selected
+    if (activeTab === 'queue' && selectedNestedSafeAddr) {
+      checkQueueApprovals();
+    }
+  }, [activeTab, selectedNestedSafeAddr, queuedTxs]);
 
   const isCurrentSafeOwner = useMemo(() => {
     if (!selectedSafeAddr || nestedOwners.length === 0) return false;
@@ -230,6 +262,8 @@ const App: React.FC = () => {
     await getClient();
     setLoading(false);
   };
+
+  // --- SAFE ACTIONS ---
 
   const createParentSafe = async () => {
     const client = await getClient();
@@ -325,6 +359,11 @@ const App: React.FC = () => {
       setNewThresholdInput(Number(thresh));
     } catch { setNestedThreshold(1); }
 
+    try {
+      const nonce = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "nonce" });
+      setNestedNonce(Number(nonce));
+    } catch { }
+
     setLoading(false);
   };
 
@@ -343,9 +382,49 @@ const App: React.FC = () => {
     }
   };
 
-  const executeTx = async (to: string, val: bigint, data: Hex) => {
+  // --- MULTI-SIG LOGIC ---
+
+  const getSafeTxHash = async (to: string, val: bigint, data: Hex) => {
+    const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+    const hash = await publicClient.readContract({
+      address: selectedNestedSafeAddr as Hex,
+      abi: SAFE_ABI,
+      functionName: "getTransactionHash",
+      args: [to as Hex, val, data, 0, 0n, 0n, 0n, "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000", BigInt(nestedNonce)]
+    });
+    return hash;
+  };
+
+  const proposeTransaction = async (to: string, val: bigint, data: Hex, description: string) => {
+    try {
+      setLoading(true);
+      const hash = await getSafeTxHash(to, val, data);
+
+      const newTx: QueuedTx = {
+        hash,
+        to,
+        value: val.toString(),
+        data,
+        nonce: nestedNonce,
+        description
+      };
+
+      const updatedQueue = [...queuedTxs, newTx];
+      setQueuedTxs(updatedQueue);
+      localStorage.setItem("localTxQueue", JSON.stringify(updatedQueue));
+
+      addLog("Transaction Added to Queue.", "success");
+      setActiveTab('queue');
+    } catch (e: any) {
+      addLog(`Proposal failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const approveTxHash = async (hash: string) => {
     const client = await getClient();
-    if (!client || !selectedSafeAddr || !selectedNestedSafeAddr) return;
+    if (!client || !selectedSafeAddr) return;
 
     try {
       setLoading(true);
@@ -365,37 +444,138 @@ const App: React.FC = () => {
         userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
       });
 
-      const r = pad(parent.address as Hex, { size: 32 });
-      const signatures = `${r}${"00".repeat(32)}01` as Hex;
-
       const callData = encodeFunctionData({
-        abi: SAFE_ABI, functionName: "execTransaction",
-        args: [to as Hex, val, data, 0, 0n, 0n, 0n, "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000", signatures]
+        abi: SAFE_ABI,
+        functionName: "approveHash",
+        args: [hash as Hex]
       });
 
-      const hash = await smartClient.sendTransaction({ to: selectedNestedSafeAddr as Hex, value: 0n, data: callData });
-      addLog(`TX Sent: ${hash}`, 'success');
+      const txHash = await smartClient.sendTransaction({
+        to: selectedNestedSafeAddr as Hex,
+        value: 0n,
+        data: callData
+      });
+
+      addLog(`Approved Hash! TX: ${txHash}`, "success");
+      setTimeout(() => checkQueueApprovals(), 4000);
+    } catch (e: any) {
+      addLog(`Approval Failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const checkQueueApprovals = async () => {
+    const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+    const newMap: Record<string, string[]> = {};
+
+    for (const tx of queuedTxs) {
+      if (tx.nonce < nestedNonce) continue;
+
+      const approvedBy: string[] = [];
+      for (const owner of nestedOwners) {
+        const isApproved = await publicClient.readContract({
+          address: selectedNestedSafeAddr as Hex,
+          abi: SAFE_ABI,
+          functionName: "approvedHashes",
+          args: [owner as Hex, tx.hash as Hex]
+        });
+        if (isApproved === 1n) approvedBy.push(owner);
+      }
+      newMap[tx.hash] = approvedBy;
+    }
+    setApprovalsMap(newMap);
+  };
+
+  const executeQueuedTx = async (tx: QueuedTx) => {
+    const client = await getClient();
+    if (!client || !selectedSafeAddr) return;
+
+    try {
+      setLoading(true);
+      const parent = mySafes.find(s => s.address === selectedSafeAddr);
+      if (!parent) return;
+
+      // 1. Sort owners
+      const sortedOwners = [...nestedOwners].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+      // 2. Build Signatures
+      let signatures = "0x";
+
+      for (const owner of sortedOwners) {
+        const approvedList = approvalsMap[tx.hash] || [];
+        const isApproved = approvedList.some(o => o.toLowerCase() === owner.toLowerCase());
+        const isCurrentSigner = owner.toLowerCase() === parent.address.toLowerCase();
+
+        if (isApproved || isCurrentSigner) {
+          signatures += pad(owner as Hex, { size: 32 }).slice(2);
+          signatures += pad("0x0", { size: 32 }).slice(2);
+          signatures += "01";
+        }
+      }
+
+      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
+
+      const safeAccount = await toSafeSmartAccount({
+        client: publicClient, owners: [client], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1",
+        address: parent.address as Hex, saltNonce: BigInt(parent.salt)
+      });
+
+      const smartClient = createSmartAccountClient({
+        account: safeAccount, chain: baseSepolia, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
+        userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
+      });
+
+      const execData = encodeFunctionData({
+        abi: SAFE_ABI,
+        functionName: "execTransaction",
+        args: [
+          tx.to as Hex,
+          BigInt(tx.value),
+          tx.data as Hex,
+          0, 0n, 0n, 0n,
+          "0x0000000000000000000000000000000000000000",
+          "0x0000000000000000000000000000000000000000",
+          signatures as Hex
+        ]
+      });
+
+      const hash = await smartClient.sendTransaction({
+        to: selectedNestedSafeAddr as Hex,
+        value: 0n,
+        data: execData
+      });
+
+      addLog(`Execution Sent! TX: ${hash}`, "success");
+
+      const newQueue = queuedTxs.filter(t => t.hash !== tx.hash);
+      setQueuedTxs(newQueue);
+      localStorage.setItem("localTxQueue", JSON.stringify(newQueue));
+
       setTimeout(() => {
         fetchData(selectedNestedSafeAddr);
-        if (activeTab === 'history') fetchHistory(selectedNestedSafeAddr);
+        setActiveTab('history');
       }, 4000);
-    } catch (e: any) { addLog(e.message, 'error'); } finally { setLoading(false); }
+
+    } catch (e: any) {
+      addLog(`Execution Failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleAddOwner = async () => {
     if (!newOwnerInput) return;
     const data = encodeFunctionData({ abi: SAFE_ABI, functionName: "addOwnerWithThreshold", args: [newOwnerInput as Hex, 1n] });
-    await executeTx(selectedNestedSafeAddr, 0n, data);
+    await proposeTransaction(selectedNestedSafeAddr, 0n, data, `Add Owner: ${newOwnerInput.slice(0, 6)}...`);
     setNewOwnerInput("");
   };
 
   const handleUpdateThreshold = async () => {
-    if (newThresholdInput < 1 || newThresholdInput > nestedOwners.length) {
-      addLog("Invalid Threshold", "error");
-      return;
-    }
+    if (newThresholdInput < 1) return;
     const data = encodeFunctionData({ abi: SAFE_ABI, functionName: "changeThreshold", args: [BigInt(newThresholdInput)] });
-    await executeTx(selectedNestedSafeAddr, 0n, data);
+    await proposeTransaction(selectedNestedSafeAddr, 0n, data, `Change Threshold to ${newThresholdInput}`);
   };
 
   const isDashboard = myNestedSafes.length > 0;
@@ -472,7 +652,7 @@ const App: React.FC = () => {
                       setUsdcBalance(null);
                       setNestedOwners([]);
                       setNestedThreshold(0);
-                      setTxHistory([]); // Reset history on switch
+                      setTxHistory([]);
                       setSelectedNestedSafeAddr(safe.address);
                       fetchData(safe.address);
                     }}
@@ -495,6 +675,9 @@ const App: React.FC = () => {
             <div className="panel-header">
               <button className={`tab-btn ${activeTab === 'transfer' ? 'active' : ''}`} onClick={() => setActiveTab('transfer')}>Transfer</button>
               <button className={`tab-btn ${activeTab === 'owners' ? 'active' : ''}`} onClick={() => setActiveTab('owners')}>Owners</button>
+              <button className={`tab-btn ${activeTab === 'queue' ? 'active' : ''}`} onClick={() => setActiveTab('queue')}>
+                Queue {queuedTxs.filter(t => t.nonce >= nestedNonce).length > 0 && <span className="header-badge" style={{ background: 'var(--primary)', border: 'none', marginLeft: '6px' }}>{queuedTxs.filter(t => t.nonce >= nestedNonce).length}</span>}
+              </button>
               <button className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</button>
               <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>Settings</button>
             </div>
@@ -502,7 +685,7 @@ const App: React.FC = () => {
             <div className="panel-content">
               {!isCurrentSafeOwner && (
                 <div style={{ background: 'rgba(245, 158, 11, 0.1)', color: '#fbbf24', padding: '10px', borderRadius: '8px', marginBottom: '20px', fontSize: '0.9rem', display: 'flex', gap: '10px' }}>
-                  <span>⚠️ The selected Parent Safe is NOT an owner of the active Nested Safe. Transactions will fail.</span>
+                  <span>⚠️ The selected Parent Safe is NOT an owner. Transactions cannot be initiated.</span>
                 </div>
               )}
 
@@ -516,10 +699,65 @@ const App: React.FC = () => {
                     <label>Amount (ETH)</label>
                     <input type="number" placeholder="0.0" value={sendAmount} onChange={e => setSendAmount(e.target.value)} />
                   </div>
-                  <button className="action-btn" onClick={() => executeTx(recipient, parseEther(sendAmount), "0x")} disabled={loading || !isCurrentSafeOwner}>
-                    {loading ? "Processing..." : "Sign & Send"}
+                  <button className="action-btn" onClick={() => proposeTransaction(recipient, parseEther(sendAmount), "0x", `Transfer ${sendAmount} ETH`)} disabled={loading || !isCurrentSafeOwner}>
+                    {nestedThreshold > 1 ? `Create Proposal (${nestedThreshold} sigs needed)` : "Execute Transaction"}
                   </button>
                 </>
+              )}
+
+              {activeTab === 'queue' && (
+                <div>
+                  <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                    <span>Pending Transactions (Nonce {nestedNonce})</span>
+                    <button onClick={checkQueueApprovals} className="icon-btn"><Icons.Refresh /></button>
+                  </div>
+
+                  {queuedTxs.filter(t => t.nonce >= nestedNonce).length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>No pending transactions.</div>
+                  ) : (
+                    queuedTxs.filter(t => t.nonce >= nestedNonce).map(tx => {
+                      const approvals = approvalsMap[tx.hash] || [];
+                      const hasSigned = approvals.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
+
+                      // Check if we can execute. 
+                      // Conditions: 
+                      // 1. Current approvals + (me if I sign now) >= Threshold
+                      const potentialCount = approvals.length + (hasSigned ? 0 : 1);
+                      const readyToExec = potentialCount >= nestedThreshold;
+
+                      // If I haven't signed, I can sign.
+                      // If readyToExec is true, I can Execute (which implicitly signs if I haven't already).
+
+                      return (
+                        <div key={tx.hash} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1rem', marginBottom: '1rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '10px' }}>
+                            <div style={{ fontWeight: '600' }}>{tx.description}</div>
+                            <div className="header-badge" style={{ background: approvals.length >= nestedThreshold ? 'var(--success)' : 'var(--surface-3)', color: 'white' }}>
+                              {approvals.length} / {nestedThreshold} Signatures
+                            </div>
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem', fontFamily: 'monospace' }}>
+                            Hash: {tx.hash.slice(0, 10)}...{tx.hash.slice(-8)}
+                          </div>
+
+                          <div style={{ display: 'flex', gap: '10px' }}>
+                            {!hasSigned && (
+                              <button className="action-btn secondary" onClick={() => approveTxHash(tx.hash)} disabled={loading || !isCurrentSafeOwner}>
+                                Sign (Approve)
+                              </button>
+                            )}
+
+                            {readyToExec && (
+                              <button className="action-btn" onClick={() => executeQueuedTx(tx)} disabled={loading || !isCurrentSafeOwner}>
+                                Execute Transaction
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               )}
 
               {activeTab === 'owners' && (
@@ -541,14 +779,13 @@ const App: React.FC = () => {
                         <Icons.Plus /> {s.name}
                       </button>
                     ))}
-                    {mySafes.every(s => nestedOwners.some(o => o.toLowerCase() === s.address.toLowerCase())) && <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>All your safes are owners.</span>}
                   </div>
 
                   <div className="input-group" style={{ marginTop: '1rem' }}>
                     <label>Add External Owner Address</label>
                     <div style={{ display: 'flex', gap: '10px' }}>
                       <input value={newOwnerInput} onChange={e => setNewOwnerInput(e.target.value)} placeholder="0x..." />
-                      <button className="action-btn small" onClick={handleAddOwner} disabled={loading || !isCurrentSafeOwner}>Add</button>
+                      <button className="action-btn small" onClick={handleAddOwner} disabled={loading || !isCurrentSafeOwner}>Propose Add</button>
                     </div>
                   </div>
 
@@ -571,7 +808,7 @@ const App: React.FC = () => {
                         style={{ width: '60px' }}
                       />
                       <button className="action-btn small" onClick={handleUpdateThreshold} disabled={loading || !isCurrentSafeOwner}>
-                        Update
+                        Propose Update
                       </button>
                     </div>
                   </div>
@@ -593,12 +830,9 @@ const App: React.FC = () => {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       {txHistory.map((tx, i) => {
                         const isIncoming = tx.txType === 'ETHEREUM_TRANSACTION';
-
-                        // --- FIX: Calculate actual value by summing transfers if needed ---
                         let valueBigInt = BigInt(0);
 
                         if (isIncoming && tx.transfers) {
-                          // Sum up all ETH transfers in this transaction
                           tx.transfers.forEach(t => {
                             if (t.type === 'ETHER_TRANSFER') {
                               valueBigInt += BigInt(t.value);
@@ -608,13 +842,11 @@ const App: React.FC = () => {
                           valueBigInt = BigInt(tx.value);
                         }
 
-                        // Skip if truly 0 (unless it's an execution)
                         if (isIncoming && valueBigInt === 0n) return null;
 
                         const amount = formatEther(valueBigInt);
                         const date = new Date(tx.executionDate).toLocaleDateString();
 
-                        // Identify known addresses
                         let label = isIncoming ? "Received ETH" : "Executed TX";
                         const counterParty = isIncoming ? tx.from : tx.to;
                         const matchedSafe = mySafes.find(s => s.address.toLowerCase() === counterParty?.toLowerCase()) ||
