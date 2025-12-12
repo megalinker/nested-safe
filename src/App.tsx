@@ -31,24 +31,30 @@ const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
 const SAFE_ABI = parseAbi([
   "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool success)",
-  "function addOwnerWithThreshold(address owner, uint256 _threshold) public"
+  "function addOwnerWithThreshold(address owner, uint256 _threshold) public",
+  "function changeThreshold(uint256 _threshold) public",
+  "function getOwners() view returns (address[])",
+  "function getThreshold() view returns (uint256)"
 ]);
 
 const ERC20_ABI = parseAbi([
   "function balanceOf(address owner) view returns (uint256)"
 ]);
 
-// --- ICONS ---
-const WalletIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-9" /><path d="M14 17H5" /><circle cx="17" cy="17" r="3" /><path d="M7 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3" /></svg>;
-const SafeIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>;
-const NestedIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>;
-const VerifyIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>;
-const CheckIcon = () => <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" /></svg>;
-const CopyIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>;
-const LinkIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>;
-const DashboardIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>;
-const RefreshIcon = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>;
-const KeyIcon = () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" /></svg>;
+// --- ICONS (Simplified for readability) ---
+const Icons = {
+  Wallet: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-9" /><path d="M14 17H5" /><circle cx="17" cy="17" r="3" /><path d="M7 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3" /></svg>,
+  Safe: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>,
+  Nested: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>,
+  Check: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" /></svg>,
+  Copy: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>,
+  Refresh: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>,
+  Send: () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>,
+  Settings: () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>,
+  ChevronUp: () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="18 15 12 9 6 15" /></svg>,
+  ChevronDown: () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9" /></svg>,
+  Fingerprint: () => <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M2 12a10 10 0 0 1 10-10 10 10 0 0 1 10 10" /><path d="M12 16v-4" /><path d="M8 12a4 4 0 0 1 8 0" /></svg>
+};
 
 interface LogEntry {
   msg: string;
@@ -56,42 +62,33 @@ interface LogEntry {
   timestamp: string;
 }
 
+// --- SETUP CARD COMPONENT ---
 const StepCard = ({
-  step, title, desc, isActive, isDone, isDisabled, actionLabel, onAction, address, Icon, extraAction, children, loading
+  title, desc, isActive, isDone, isDisabled, actionLabel, onAction, address, Icon, loading
 }: any) => {
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-  };
+  const copyToClipboard = (text: string) => navigator.clipboard.writeText(text);
 
   return (
     <div className={`step-card ${isActive ? 'active' : ''} ${isDone ? 'success' : ''} ${isDisabled ? 'disabled' : ''}`}>
-      <div className="step-indicator">
-        {isDone ? <CheckIcon /> : step}
+      <div className="step-icon">
+        {isDone ? <Icons.Check /> : <Icon />}
       </div>
-      <div className="step-content">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 className="step-title">{title}</h3>
-          {Icon && <div style={{ color: 'var(--text-muted)' }}><Icon /></div>}
-        </div>
-        <p className="step-desc">{desc}</p>
+      <div className="step-info">
+        <h3>{title}</h3>
+        <p>{desc}</p>
 
         {address && (
-          <div className="address-box">
-            <span>{address.slice(0, 8)}...{address.slice(-6)}</span>
-            <button className="copy-btn" onClick={() => copyToClipboard(address)} title="Copy"><CopyIcon /></button>
+          <div className="address-pill">
+            <span>{address.slice(0, 10)}...{address.slice(-8)}</span>
+            <button className="copy-icon" onClick={() => copyToClipboard(address)}><Icons.Copy /></button>
           </div>
         )}
 
-        {children}
-
-        <div style={{ display: 'flex', gap: '10px', marginTop: '0.5rem' }}>
-          {!isDone && onAction && (
-            <button className="action-btn" onClick={onAction} disabled={loading || isDisabled}>
-              {loading && isActive ? "Processing..." : actionLabel}
-            </button>
-          )}
-          {extraAction}
-        </div>
+        {!isDone && onAction && (
+          <button className="action-btn" onClick={onAction} disabled={loading || isDisabled} style={{ marginTop: '1rem' }}>
+            {loading && isActive ? "Processing..." : actionLabel}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -100,22 +97,32 @@ const StepCard = ({
 // --- MAIN APP COMPONENT ---
 
 const App: React.FC = () => {
+  // --- STATE ---
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
   const [eoaAddress, setEoaAddress] = useState<string>("");
   const [primarySafeAddress, setPrimarySafeAddress] = useState<string>("");
   const [nestedSafeAddress, setNestedSafeAddress] = useState<string>("");
   const [passkeyAddress, setPasskeyAddress] = useState<string>("");
-  const [passkeyId, setPasskeyId] = useState<string>(""); // Store the browser ID
+  const [passkeyId, setPasskeyId] = useState<string>("");
   const [isVerified, setIsVerified] = useState(false);
 
   // Dashboard State
   const [ethBalance, setEthBalance] = useState("0");
   const [usdcBalance, setUsdcBalance] = useState("0");
-  const [sendAmount, setSendAmount] = useState("");
-  const [recipient, setRecipient] = useState("");
+  const [nestedOwners, setNestedOwners] = useState<string[]>([]);
+  const [nestedThreshold, setNestedThreshold] = useState<number>(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Signer Selection
+  // UI State
+  const [activeTab, setActiveTab] = useState<'transfer' | 'owners' | 'settings'>('transfer');
+  const [showTerminal, setShowTerminal] = useState(true);
+
+  // Forms
+  const [sendAmount, setSendAmount] = useState("");
+  const [recipient, setRecipient] = useState("");
+  const [newOwnerInput, setNewOwnerInput] = useState("");
+  const [newThresholdInput, setNewThresholdInput] = useState(1);
+  const [updateThresholdInput, setUpdateThresholdInput] = useState(1);
   const [selectedSigner, setSelectedSigner] = useState<'phantom' | 'passkey'>('phantom');
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -133,7 +140,7 @@ const App: React.FC = () => {
     if (savedPasskey) setPasskeyAddress(savedPasskey);
     if (savedPasskeyId) setPasskeyId(savedPasskeyId);
 
-    if (savedNested) fetchBalances(savedNested);
+    if (savedNested) fetchData(savedNested);
   }, []);
 
   useEffect(() => {
@@ -143,9 +150,10 @@ const App: React.FC = () => {
   const addLog = (msg: string, type: 'info' | 'success' | 'error' | 'warning' = 'info') => {
     const timestamp = new Date().toLocaleTimeString();
     setLogs(prev => [...prev, { msg, type, timestamp }]);
+    if (type === 'error' || type === 'success') setShowTerminal(true);
   };
 
-  // --- ACTIONS ---
+  // --- ACTIONS (Simplified logic for UI Demo) ---
 
   const handleConnect = async () => {
     try {
@@ -153,15 +161,10 @@ const App: React.FC = () => {
       addLog("Connecting to Phantom...", 'info');
       const client = await connectPhantom();
       if (!client.account) throw new Error("No account returned");
-
       setWalletClient(client);
       setEoaAddress(client.account.address);
       addLog(`Connected: ${client.account.address}`, 'success');
-    } catch (e: any) {
-      addLog(e.message, 'error');
-    } finally {
-      setLoading(false);
-    }
+    } catch (e: any) { addLog(e.message, 'error'); } finally { setLoading(false); }
   };
 
   const createPrimarySafe = async () => {
@@ -169,33 +172,20 @@ const App: React.FC = () => {
     try {
       setLoading(true);
       addLog("Initializing Primary Safe (ERC-4337)...", 'info');
-
-      // 1. Get or Generate a random salt for the Primary Safe
       let salt = localStorage.getItem("primarySafeSalt");
       if (!salt) {
-        salt = BigInt(Date.now()).toString(); // Use timestamp as unique salt
+        salt = BigInt(Date.now()).toString();
         localStorage.setItem("primarySafeSalt", salt);
       }
-
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
-
       const safeAccount = await toSafeSmartAccount({
-        client: publicClient,
-        owners: [walletClient],
-        entryPoint: { address: entryPoint07Address, version: "0.7" },
-        version: "1.4.1",
-        saltNonce: BigInt(salt),
+        client: publicClient, owners: [walletClient], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1", saltNonce: BigInt(salt),
       });
-
       const address = safeAccount.address;
       setPrimarySafeAddress(address);
       localStorage.setItem("primarySafeAddress", address);
-      addLog(`Primary Safe Address Calculated: ${address}`, 'success');
-    } catch (e: any) {
-      addLog(e.message, 'error');
-    } finally {
-      setLoading(false);
-    }
+      addLog(`Primary Safe Address: ${address}`, 'success');
+    } catch (e: any) { addLog(e.message, 'error'); } finally { setLoading(false); }
   };
 
   const createNestedSafe = async () => {
@@ -203,258 +193,106 @@ const App: React.FC = () => {
     try {
       setLoading(true);
       addLog("Generating Nested Safe Payload...", 'info');
-
-      // 1. Re-initialize Primary Safe to ensure we are using the correct signer context
-      // We need to fetch the primary salt to reconstruct the 4337 account wrapper correctly
       const primarySalt = localStorage.getItem("primarySafeSalt") || "0";
-
-      // 2. Get or Generate a random salt for the Nested Safe
       let nestedSalt = localStorage.getItem("nestedSafeSalt");
-      if (!nestedSalt) {
-        nestedSalt = Date.now().toString(); // Timestamp string
-        localStorage.setItem("nestedSafeSalt", nestedSalt);
-      }
+      if (!nestedSalt) { nestedSalt = Date.now().toString(); localStorage.setItem("nestedSafeSalt", nestedSalt); }
 
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
-      const pimlicoClient = createPimlicoClient({
-        transport: http(PIMLICO_URL),
-        entryPoint: { address: entryPoint07Address, version: "0.7" },
-      });
+      const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
       const safeAccount = await toSafeSmartAccount({
-        client: publicClient,
-        owners: [walletClient],
-        entryPoint: { address: entryPoint07Address, version: "0.7" },
-        version: "1.4.1",
-        address: primarySafeAddress as Hex,
-        saltNonce: BigInt(primarySalt)
+        client: publicClient, owners: [walletClient], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1", address: primarySafeAddress as Hex, saltNonce: BigInt(primarySalt)
       });
 
       const smartAccountClient = createSmartAccountClient({
-        account: safeAccount,
-        chain: baseSepolia,
-        bundlerTransport: http(PIMLICO_URL),
-        paymaster: pimlicoClient,
-        userOperation: {
-          estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast,
-        },
+        account: safeAccount, chain: baseSepolia, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
+        userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
       });
 
       const provider = (window as any).phantom?.ethereum || (window as any).ethereum;
       const safeAccountConfig: SafeAccountConfig = { owners: [primarySafeAddress], threshold: 1 };
-
-      const protocolKit = await Safe.init({
-        provider,
-        signer: eoaAddress,
-        predictedSafe: {
-          safeAccountConfig,
-          safeDeploymentConfig: {
-            saltNonce: nestedSalt
-          }
-        }
-      });
-
+      const protocolKit = await Safe.init({ provider, signer: eoaAddress, predictedSafe: { safeAccountConfig, safeDeploymentConfig: { saltNonce: nestedSalt } } });
       const predictedAddr = await protocolKit.getAddress();
       const deploymentTx = await protocolKit.createSafeDeploymentTransaction();
 
       addLog(`Sending UserOp via Pimlico (Sponsored)...`, 'info');
-      const txHash = await smartAccountClient.sendTransaction({
-        to: deploymentTx.to as Hex,
-        value: BigInt(deploymentTx.value),
-        data: deploymentTx.data as Hex,
-      });
+      const txHash = await smartAccountClient.sendTransaction({ to: deploymentTx.to as Hex, value: BigInt(deploymentTx.value), data: deploymentTx.data as Hex });
 
       setNestedSafeAddress(predictedAddr);
       localStorage.setItem("nestedSafeAddress", predictedAddr);
-      addLog(`Success! UserOp Hash: ${txHash}`, 'success');
-      addLog(`Nested Safe: ${predictedAddr}`, 'success');
-      fetchBalances(predictedAddr);
-    } catch (e: any) {
-      console.error(e);
-      addLog(`Failed: ${e.message}`, 'error');
-    } finally {
-      setLoading(false);
-    }
+      addLog(`Success! Nested Safe Deployed: ${predictedAddr}`, 'success');
+      fetchData(predictedAddr);
+    } catch (e: any) { addLog(`Failed: ${e.message}`, 'error'); } finally { setLoading(false); }
   };
 
   const verifyOwnership = async () => {
     if (!nestedSafeAddress || !primarySafeAddress || !eoaAddress) return;
     try {
       setLoading(true);
-      setIsVerified(false);
+      addLog("Verifying Chain of Ownership...", "info");
       const provider = (window as any).phantom?.ethereum || (window as any).ethereum;
-      addLog("1. Verifying EOA -> Primary Safe...", "info");
+
       const primarySafeInstance = await Safe.init({ provider, safeAddress: primarySafeAddress });
       const primaryOwners = await primarySafeInstance.getOwners();
       if (!primaryOwners.some(o => o.toLowerCase() === eoaAddress.toLowerCase())) throw new Error("EOA not owner of Primary");
-      addLog("✅ Confirmed: You own the Primary Safe.", "success");
-      addLog("2. Verifying Primary Safe -> Nested Safe...", "info");
+
       const nestedSafeInstance = await Safe.init({ provider, safeAddress: nestedSafeAddress });
       const nestedOwners = await nestedSafeInstance.getOwners();
       if (!nestedOwners.some(o => o.toLowerCase() === primarySafeAddress.toLowerCase())) throw new Error("Primary Safe not owner of Nested");
-      addLog("✅ Confirmed: Primary Safe owns the Nested Safe.", "success");
+
+      addLog("✅ Full Ownership Verified.", "success");
       setIsVerified(true);
-    } catch (e: any) {
-      addLog(`Verification Error: ${e.message}`, "error");
-    } finally {
-      setLoading(false);
-    }
+    } catch (e: any) { addLog(`Verification Error: ${e.message}`, "error"); } finally { setLoading(false); }
   };
 
-  const fetchBalances = async (address: string) => {
+  const fetchData = async (address: string) => {
+    if (!address) return;
     try {
       setIsRefreshing(true);
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
       const eth = await publicClient.getBalance({ address: address as Hex });
       setEthBalance(formatEther(eth));
-
       try {
-        const usdc = await publicClient.readContract({
-          address: USDC_ADDRESS,
-          abi: ERC20_ABI,
-          functionName: "balanceOf",
-          args: [address as Hex]
-        });
+        const usdc = await publicClient.readContract({ address: USDC_ADDRESS, abi: ERC20_ABI, functionName: "balanceOf", args: [address as Hex] });
         setUsdcBalance(formatUnits(usdc, 6));
-      } catch (e) {
-        setUsdcBalance("0");
-      }
-      addLog("Balances updated.", 'info');
-    } catch (e) {
-      console.error("Balance fetch failed", e);
-    } finally {
-      setIsRefreshing(false);
-    }
+      } catch (e) { setUsdcBalance("0"); }
+      try {
+        const owners = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "getOwners" });
+        const threshold = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "getThreshold" });
+        setNestedOwners(Array.from(owners));
+        setNestedThreshold(Number(threshold));
+      } catch (e) { }
+      addLog("Data refreshed.", 'info');
+    } catch (e) { console.error(e); } finally { setIsRefreshing(false); }
   };
 
-  // --- ACTIONS WITH REAL PASSKEY PROMPTS ---
-
-  const addPasskeyOwner = async () => {
-    if (!walletClient || !primarySafeAddress) return;
-    try {
-      setLoading(true);
-      addLog("Prompting browser for Passkey creation...", 'warning');
-
-      // 1. Trigger Native Passkey Creation (FaceID/TouchID)
-      const newCredId = await registerPasskey("SafeOwner");
-      // Store the Credential ID to look it up later
-      setPasskeyId(newCredId);
-      localStorage.setItem("passkeyId", newCredId);
-      addLog("Passkey Created via Browser!", 'success');
-
-      // 2. Generate Signer Key
-      // (Note: In a full prod app, you'd use the P256 key from the passkey directly. 
-      //  Here we gate a local key with the passkey prompt to ensure valid UX)
-      let privKey = localStorage.getItem("passkey_priv") as Hex | null;
-      if (!privKey) {
-        privKey = generatePrivateKey();
-        localStorage.setItem("passkey_priv", privKey);
-      }
-      const account = privateKeyToAccount(privKey);
-      const newOwner = account.address;
-      addLog(`Generated Safe Signer: ${newOwner}`, 'info');
-
-      // 3. Add Owner on Chain
-      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
-      const pimlicoClient = createPimlicoClient({
-        transport: http(PIMLICO_URL),
-        entryPoint: { address: entryPoint07Address, version: "0.7" },
-      });
-
-      const safeAccount = await toSafeSmartAccount({
-        client: publicClient,
-        owners: [walletClient],
-        entryPoint: { address: entryPoint07Address, version: "0.7" },
-        version: "1.4.1",
-        address: primarySafeAddress as Hex,
-      });
-
-      const smartAccountClient = createSmartAccountClient({
-        account: safeAccount,
-        chain: baseSepolia,
-        bundlerTransport: http(PIMLICO_URL),
-        paymaster: pimlicoClient,
-        userOperation: {
-          estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast,
-        },
-      });
-
-      const addOwnerData = encodeFunctionData({
-        abi: SAFE_ABI,
-        functionName: "addOwnerWithThreshold",
-        args: [newOwner, 1n]
-      });
-
-      addLog("Signing with Phantom to add new owner...", 'info');
-      const txHash = await smartAccountClient.sendTransaction({
-        to: primarySafeAddress as Hex,
-        value: 0n,
-        data: addOwnerData,
-      });
-
-      addLog(`Owner Added! Tx: ${txHash}`, 'success');
-      setPasskeyAddress(newOwner);
-      localStorage.setItem("passkeyAddress", newOwner);
-
-    } catch (e: any) {
-      console.error(e);
-      addLog(`Add Owner Failed: ${e.message}`, 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const sendFromNestedSafe = async () => {
+  const executeOnNestedSafe = async (targetContract: string, valueWei: bigint, callData: Hex, description: string) => {
     if (!walletClient || !primarySafeAddress || !nestedSafeAddress) return;
     try {
-      if (!sendAmount || !recipient) throw new Error("Enter amount and recipient");
       setLoading(true);
-
       const signerName = selectedSigner === 'phantom' ? "Phantom" : "Passkey";
-      addLog(`Preparing to send ${sendAmount} ETH using ${signerName}...`, 'info');
+      addLog(`${description} via ${signerName}...`, 'info');
 
-      // --- PASSKEY GATE ---
       let ownerAccount;
       if (selectedSigner === 'phantom') {
         ownerAccount = walletClient;
       } else {
-        // Trigger Native Browser Prompt
-        if (!passkeyId) throw new Error("No passkey ID found");
-        addLog("Please authenticate with FaceID/TouchID...", 'warning');
-
-        // This halts execution until user touches sensor
-        const isAuthenticated = await authenticatePasskey(passkeyId);
-
-        if (!isAuthenticated) throw new Error("Biometric verification failed");
-        addLog("Biometric verified!", 'success');
-
-        const privKey = localStorage.getItem("passkey_priv") as Hex;
-        ownerAccount = privateKeyToAccount(privKey);
+        if (!passkeyId) throw new Error("No passkey ID found.");
+        addLog("Authenticate with Biometrics...", 'warning');
+        if (!(await authenticatePasskey(passkeyId))) throw new Error("Biometric failed");
+        ownerAccount = privateKeyToAccount(localStorage.getItem("passkey_priv") as Hex);
       }
 
-      // --- EXECUTE TRANSACTION ---
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
-      const pimlicoClient = createPimlicoClient({
-        transport: http(PIMLICO_URL),
-        entryPoint: { address: entryPoint07Address, version: "0.7" },
-      });
+      const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
       const safeAccount = await toSafeSmartAccount({
-        client: publicClient,
-        owners: [ownerAccount],
-        entryPoint: { address: entryPoint07Address, version: "0.7" },
-        version: "1.4.1",
-        address: primarySafeAddress as Hex,
+        client: publicClient, owners: [ownerAccount], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1", address: primarySafeAddress as Hex,
       });
 
       const smartAccountClient = createSmartAccountClient({
-        account: safeAccount,
-        chain: baseSepolia,
-        bundlerTransport: http(PIMLICO_URL),
-        paymaster: pimlicoClient,
-        userOperation: {
-          estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast,
-        },
+        account: safeAccount, chain: baseSepolia, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
+        userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
       });
 
       const r = pad(primarySafeAddress as Hex, { size: 32 });
@@ -463,242 +301,279 @@ const App: React.FC = () => {
       const signatures = `${r}${s.slice(2)}${v}` as Hex;
 
       const nestedSafeCallData = encodeFunctionData({
-        abi: SAFE_ABI,
-        functionName: "execTransaction",
-        args: [
-          recipient as Hex,
-          parseEther(sendAmount),
-          "0x",
-          0,
-          0n, 0n, 0n,
-          "0x0000000000000000000000000000000000000000",
-          "0x0000000000000000000000000000000000000000",
-          signatures
-        ]
+        abi: SAFE_ABI, functionName: "execTransaction",
+        args: [targetContract as Hex, valueWei, callData, 0, 0n, 0n, 0n, "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000", signatures]
       });
 
-      addLog(`Authorizing via Primary Safe (${signerName})...`, 'info');
-
-      const txHash = await smartAccountClient.sendTransaction({
-        to: nestedSafeAddress as Hex,
-        value: 0n,
-        data: nestedSafeCallData,
-      });
-
-      addLog(`Transaction Sent! Hash: ${txHash}`, 'success');
-      setTimeout(() => fetchBalances(nestedSafeAddress), 5000);
-
-    } catch (e: any) {
-      console.error(e);
-      addLog(`Send Failed: ${e.message}`, 'error');
-    } finally {
-      setLoading(false);
-    }
+      const txHash = await smartAccountClient.sendTransaction({ to: nestedSafeAddress as Hex, value: 0n, data: nestedSafeCallData });
+      addLog(`Executed! Hash: ${txHash}`, 'success');
+      setTimeout(() => fetchData(nestedSafeAddress), 4000);
+    } catch (e: any) { addLog(`Execution Failed: ${e.message}`, 'error'); } finally { setLoading(false); }
   };
 
+  const handleSendEth = async () => {
+    if (!sendAmount || !recipient) return;
+    await executeOnNestedSafe(recipient, parseEther(sendAmount), "0x", `Sending ${sendAmount} ETH`);
+  };
+
+  const handleAddNestedOwner = async () => {
+    if (!newOwnerInput || newThresholdInput < 1) return;
+    const addOwnerData = encodeFunctionData({ abi: SAFE_ABI, functionName: "addOwnerWithThreshold", args: [newOwnerInput as Hex, BigInt(newThresholdInput)] });
+    await executeOnNestedSafe(nestedSafeAddress, 0n, addOwnerData, `Adding owner ${newOwnerInput.slice(0, 6)}...`);
+    setNewOwnerInput("");
+  };
+
+  const addPasskeySigner = async () => {
+    try {
+      setLoading(true);
+      const newCredId = await registerPasskey("SafeOwner");
+      setPasskeyId(newCredId); localStorage.setItem("passkeyId", newCredId);
+      let privKey = localStorage.getItem("passkey_priv") as Hex | null;
+      if (!privKey) { privKey = generatePrivateKey(); localStorage.setItem("passkey_priv", privKey); }
+      const account = privateKeyToAccount(privKey);
+      setPasskeyAddress(account.address); localStorage.setItem("passkeyAddress", account.address);
+      addLog("Passkey added to device.", 'success');
+    } catch (e: any) { addLog(e.message, 'error'); } finally { setLoading(false); }
+  };
+
+  // --- RENDER ---
+
+  const isDashboardMode = !!nestedSafeAddress;
+
   return (
-    <div className="app-container">
-      <header className="header">
-        <h1>Nested Safe Engine</h1>
-        <p>Base Sepolia • 4337 • Pimlico Sponsored</p>
-      </header>
-      <div className="steps-container">
-        <StepCard
-          step={1}
-          title="Connect Phantom"
-          desc="Link your Phantom wallet to act as the signer."
-          isActive={!eoaAddress}
-          isDone={!!eoaAddress}
-          isDisabled={false}
-          actionLabel="Connect Wallet"
-          onAction={handleConnect}
-          address={eoaAddress}
-          Icon={WalletIcon}
-          loading={loading}
-        />
-        <StepCard
-          step={2}
-          title="Initialize Primary Safe"
-          desc="Generate the 4337 Safe address."
-          isActive={!!eoaAddress && !primarySafeAddress}
-          isDone={!!primarySafeAddress}
-          isDisabled={!eoaAddress}
-          actionLabel="Initialize Safe"
-          onAction={createPrimarySafe}
-          address={primarySafeAddress}
-          Icon={SafeIcon}
-          loading={loading}
-        />
-        <StepCard
-          step={3}
-          title="Deploy Nested Safe"
-          desc="Primary Safe deploys the Nested Safe via Pimlico."
-          isActive={!!primarySafeAddress && !nestedSafeAddress}
-          isDone={!!nestedSafeAddress}
-          isDisabled={!primarySafeAddress}
-          actionLabel="Deploy Sponsored"
-          onAction={createNestedSafe}
-          address={nestedSafeAddress}
-          Icon={NestedIcon}
-          loading={loading}
-        />
+    <>
+      <div className="app-container">
+        <header className="header">
+          <div className="header-badge">Base Sepolia Testnet</div>
+          <h1>Nested Safe Engine</h1>
+          {!isDashboardMode && <p style={{ color: 'var(--text-secondary)' }}>Initialize your ERC-4337 Account Abstraction Structure</p>}
+        </header>
 
-        <StepCard
-          step={4}
-          title="Full Chain Verification"
-          desc="Verify ownership chain: EOA -> Primary -> Nested."
-          isActive={!!nestedSafeAddress && !isVerified}
-          isDone={isVerified}
-          isDisabled={!nestedSafeAddress}
-          actionLabel="Run Verification"
-          onAction={verifyOwnership}
-          Icon={VerifyIcon}
-          loading={loading}
-          extraAction={
-            nestedSafeAddress ? (
-              <a
-                href={`https://sepolia.basescan.org/address/${nestedSafeAddress}#readProxyContract`}
-                target="_blank"
-                rel="noreferrer"
-                className="action-btn"
-                style={{ textDecoration: 'none', background: 'var(--surface-hover)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-              >
-                View on Basescan <LinkIcon />
-              </a>
-            ) : null
-          }
-        />
+        {/* --- ONBOARDING / SETUP MODE --- */}
+        {!isDashboardMode && (
+          <div className="setup-container">
+            <StepCard
+              title="1. Connect Phantom"
+              desc="Connect your browser wallet to act as the root signer."
+              isActive={!eoaAddress}
+              isDone={!!eoaAddress}
+              actionLabel="Connect Wallet"
+              onAction={handleConnect}
+              address={eoaAddress}
+              Icon={Icons.Wallet}
+              loading={loading}
+            />
+            <StepCard
+              title="2. Initialize Primary Safe"
+              desc="Generate the deterministic address for your Primary Safe."
+              isActive={!!eoaAddress && !primarySafeAddress}
+              isDone={!!primarySafeAddress}
+              isDisabled={!eoaAddress}
+              actionLabel="Initialize Safe"
+              onAction={createPrimarySafe}
+              address={primarySafeAddress}
+              Icon={Icons.Safe}
+              loading={loading}
+            />
+            <StepCard
+              title="3. Deploy Nested Safe"
+              desc="Deploy the child Safe controlled by the Primary Safe."
+              isActive={!!primarySafeAddress}
+              isDisabled={!primarySafeAddress}
+              actionLabel="Deploy Sponsored"
+              onAction={createNestedSafe}
+              Icon={Icons.Nested}
+              loading={loading}
+            />
+          </div>
+        )}
 
-        {/* Step 5: Dashboard */}
-        {nestedSafeAddress && (
-          <StepCard
-            step={5}
-            title="Nested Safe Dashboard"
-            desc="Manage assets in your Nested Safe."
-            isActive={true}
-            isDone={false}
-            isDisabled={false}
-            Icon={DashboardIcon}
-            loading={loading}
-            extraAction={
-              <button
-                className="action-btn"
-                onClick={() => fetchBalances(nestedSafeAddress)}
-                disabled={isRefreshing}
-                style={{ background: 'var(--surface-hover)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-              >
-                {isRefreshing ? "Refreshing..." : "Refresh"} <RefreshIcon />
-              </button>
-            }
-          >
-            {/* Signer Management Section */}
-            <div style={{ margin: '1rem 0', padding: '1rem', border: '1px solid var(--border-color)', borderRadius: '8px', background: 'rgba(255,255,255,0.02)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h4 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <KeyIcon /> Signer Settings
-                </h4>
-                {!passkeyAddress ? (
+        {/* --- DASHBOARD MODE --- */}
+        {isDashboardMode && (
+          <div className="dashboard-container">
+
+            {/* SIDEBAR */}
+            <div className="info-card">
+              <div className="balance-display">
+
+                {/* Header with Refresh Button */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginBottom: '0.5rem' }}>
+                  <span className="balance-label" style={{ margin: 0 }}>Total Balance</span>
                   <button
-                    className="action-btn"
-                    onClick={addPasskeyOwner}
-                    disabled={loading}
-                    style={{ fontSize: '0.8rem', padding: '6px 12px' }}
+                    className="refresh-btn"
+                    onClick={() => fetchData(nestedSafeAddress)}
+                    disabled={isRefreshing}
+                    title="Refresh Balance"
                   >
-                    Add Passkey / Device Key
+                    <div className={isRefreshing ? "spin-active" : ""}>
+                      <Icons.Refresh />
+                    </div>
+                  </button>
+                </div>
+
+                <span className="balance-amount">{ethBalance} ETH</span>
+                <span style={{ color: 'var(--text-dim)', fontSize: '0.9rem' }}>{usdcBalance} USDC</span>
+              </div>
+
+              <div className="verification-status">
+                <Icons.Check />
+                <span>
+                  {isVerified ? "Chain Verified" : "Verification Pending"}
+                </span>
+              </div>
+
+              {!isVerified && (
+                <button className="action-btn secondary" onClick={verifyOwnership} style={{ marginBottom: '1rem' }}>
+                  Run Verification
+                </button>
+              )}
+
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1.5rem' }}>
+                <span className="balance-label" style={{ display: 'block', marginBottom: '0.5rem' }}>Signer Config</span>
+                {!passkeyAddress ? (
+                  <button className="action-btn secondary" onClick={addPasskeySigner} disabled={loading} style={{ fontSize: '0.85rem' }}>
+                    <Icons.Fingerprint /> Enable Passkey
                   </button>
                 ) : (
-                  <span style={{ fontSize: '0.8rem', color: 'var(--success-color)' }}>
-                    Passkey Active: {passkeyAddress.slice(0, 6)}...
-                  </span>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--success)' }}>
+                    <Icons.Check /> Passkey Active
+                  </div>
                 )}
               </div>
             </div>
 
-            <div className="dashboard-grid">
-              <div className="balance-item">
-                <div className="balance-label">ETH Balance</div>
-                <div className="balance-value">{ethBalance} ETH</div>
+            {/* MAIN PANEL */}
+            <div className="main-panel">
+              <div className="tabs-header">
+                <button className={`tab-btn ${activeTab === 'transfer' ? 'active' : ''}`} onClick={() => setActiveTab('transfer')}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
+                    <Icons.Send /> Transfer
+                  </div>
+                </button>
+                <button className={`tab-btn ${activeTab === 'owners' ? 'active' : ''}`} onClick={() => setActiveTab('owners')}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
+                    <Icons.Safe /> Owners
+                  </div>
+                </button>
+                <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'center' }}>
+                    <Icons.Settings /> Settings
+                  </div>
+                </button>
               </div>
-              <div className="balance-item">
-                <div className="balance-label">USDC Balance</div>
-                <div className="balance-value">{usdcBalance} USDC</div>
+
+              <div className="panel-content">
+                {/* TRANSFER TAB */}
+                {activeTab === 'transfer' && (
+                  <div>
+                    <div className="input-group">
+                      <label>Select Signer Method</label>
+                      <div className="signer-toggle">
+                        <button className={`signer-opt ${selectedSigner === 'phantom' ? 'active' : ''}`} onClick={() => setSelectedSigner('phantom')}>
+                          Phantom Wallet
+                        </button>
+                        <button
+                          className={`signer-opt ${selectedSigner === 'passkey' ? 'active' : ''}`}
+                          onClick={() => setSelectedSigner('passkey')}
+                          disabled={!passkeyAddress}
+                          title={!passkeyAddress ? "Setup Passkey first" : ""}
+                        >
+                          Biometric Passkey
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="input-group">
+                      <label>Recipient Address</label>
+                      <input placeholder="0x..." value={recipient} onChange={e => setRecipient(e.target.value)} />
+                    </div>
+
+                    <div className="input-group">
+                      <label>Amount (ETH)</label>
+                      <input type="number" placeholder="0.0" value={sendAmount} onChange={e => setSendAmount(e.target.value)} />
+                    </div>
+
+                    <button className="action-btn" onClick={handleSendEth} disabled={loading}>
+                      {loading ? "Processing..." : "Sign & Send Transaction"}
+                    </button>
+                  </div>
+                )}
+
+                {/* OWNERS TAB */}
+                {activeTab === 'owners' && (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                      <h4 style={{ margin: 0 }}>Active Owners ({nestedThreshold}/{nestedOwners.length})</h4>
+                      <button onClick={() => fetchData(nestedSafeAddress)} className="copy-icon" style={{ color: isRefreshing ? 'var(--primary)' : '' }}>
+                        <Icons.Refresh />
+                      </button>
+                    </div>
+
+                    <div style={{ opacity: isRefreshing ? 0.5 : 1, transition: 'opacity 0.2s' }}>
+                      {nestedOwners.map(owner => (
+                        <div key={owner} className="owner-row">
+                          <span>{owner}</span>
+                          {owner.toLowerCase() === primarySafeAddress.toLowerCase() && <span className="tag">Primary Safe</span>}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ marginTop: '2rem', borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
+                      <h4 style={{ margin: '0 0 1rem 0' }}>Add New Owner</h4>
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <input placeholder="Address" value={newOwnerInput} onChange={e => setNewOwnerInput(e.target.value)} style={{ flex: 2 }} />
+                        <input type="number" placeholder="Thresh" value={newThresholdInput} onChange={e => setNewThresholdInput(parseInt(e.target.value))} style={{ width: '80px' }} />
+                      </div>
+                      <button className="action-btn secondary" onClick={handleAddNestedOwner} disabled={loading} style={{ marginTop: '1rem' }}>
+                        Add Owner
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* SETTINGS TAB */}
+                {activeTab === 'settings' && (
+                  <div>
+                    <h3>Nested Safe Configuration</h3>
+                    <div className="address-pill" style={{ justifyContent: 'flex-start', gap: '1rem' }}>
+                      <span style={{ color: 'var(--text-dim)' }}>Address:</span>
+                      <span>{nestedSafeAddress}</span>
+                      <button className="copy-icon" onClick={() => navigator.clipboard.writeText(nestedSafeAddress)}><Icons.Copy /></button>
+                    </div>
+
+                    <div style={{ marginTop: '1.5rem' }}>
+                      <a href={`https://sepolia.basescan.org/address/${nestedSafeAddress}`} target="_blank" rel="noreferrer" style={{ color: 'var(--primary)', textDecoration: 'none' }}>
+                        View on Block Explorer &rarr;
+                      </a>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
-
-            <div className="transfer-box">
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
-                <h4 style={{ margin: 0 }}>Transfer ETH</h4>
-
-                {/* Signer Toggle */}
-                <div style={{ display: 'flex', gap: '0.5rem', background: 'var(--bg-color)', padding: '2px', borderRadius: '6px' }}>
-                  <button
-                    onClick={() => setSelectedSigner('phantom')}
-                    style={{
-                      border: 'none',
-                      background: selectedSigner === 'phantom' ? 'var(--primary-color)' : 'transparent',
-                      color: selectedSigner === 'phantom' ? 'white' : 'var(--text-muted)',
-                      borderRadius: '4px',
-                      padding: '4px 8px',
-                      cursor: 'pointer',
-                      fontSize: '0.8rem'
-                    }}
-                  >
-                    Phantom
-                  </button>
-                  <button
-                    onClick={() => setSelectedSigner('passkey')}
-                    disabled={!passkeyAddress}
-                    style={{
-                      border: 'none',
-                      background: selectedSigner === 'passkey' ? 'var(--primary-color)' : 'transparent',
-                      color: !passkeyAddress ? 'rgba(255,255,255,0.2)' : (selectedSigner === 'passkey' ? 'white' : 'var(--text-muted)'),
-                      borderRadius: '4px',
-                      padding: '4px 8px',
-                      cursor: !passkeyAddress ? 'not-allowed' : 'pointer',
-                      fontSize: '0.8rem'
-                    }}
-                  >
-                    Passkey
-                  </button>
-                </div>
-              </div>
-
-              <div className="input-row">
-                <input
-                  placeholder="Amount (ETH)"
-                  value={sendAmount}
-                  onChange={e => setSendAmount(e.target.value)}
-                  type="number"
-                />
-                <input
-                  placeholder="Recipient Address (0x...)"
-                  value={recipient}
-                  onChange={e => setRecipient(e.target.value)}
-                />
-              </div>
-              <button
-                className="action-btn"
-                onClick={sendFromNestedSafe}
-                disabled={loading}
-                style={{ width: '100%', marginTop: '10px' }}
-              >
-                {loading ? "Processing..." : `Sign with ${selectedSigner === 'phantom' ? 'Phantom' : 'Passkey'} & Send`}
-              </button>
-            </div>
-          </StepCard>
+          </div>
         )}
       </div>
 
-      <div className="terminal">
-        {logs.length === 0 && <span style={{ opacity: 0.5 }}>System logs will appear here...</span>}
-        {logs.map((l, i) => (
-          <div key={i} className={`log-entry ${l.type}`}>
-            [{l.timestamp}] {l.msg}
+      {/* --- COLLAPSIBLE LOGS DRAWER --- */}
+      <div className="terminal-drawer" style={{ transform: showTerminal ? 'translateY(0)' : 'translateY(100%) translateY(-45px)' }}>
+        <div className="terminal-header" onClick={() => setShowTerminal(!showTerminal)}>
+          <div className="terminal-title">
+            <span className={`status-indicator ${loading ? 'online' : ''}`} style={{ background: loading ? 'var(--warning)' : 'var(--success)' }}></span>
+            System Logs {loading ? "(Processing...)" : ""}
           </div>
-        ))}
-        <div ref={logsEndRef} />
+          {showTerminal ? <Icons.ChevronDown /> : <Icons.ChevronUp />}
+        </div>
+        <div className="terminal-content">
+          {logs.map((l, i) => (
+            <div key={i} className={`log-entry ${l.type}`}>
+              <span>[{l.timestamp}]</span>
+              <span>{l.msg}</span>
+            </div>
+          ))}
+          <div ref={logsEndRef} />
+        </div>
       </div>
-    </div>
+    </>
   );
 };
 
