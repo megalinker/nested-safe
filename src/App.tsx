@@ -16,7 +16,7 @@ import { entryPoint07Address } from "viem/account-abstraction";
 import { createSmartAccountClient } from "permissionless";
 import { toSafeSmartAccount } from "permissionless/accounts";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
-import Safe from "@safe-global/protocol-kit";
+import Safe, { type SafeAccountConfig } from "@safe-global/protocol-kit";
 
 import { connectPhantom } from "./utils/phantom";
 import "./App.css";
@@ -64,6 +64,8 @@ interface Transfer {
   value: string;
   tokenAddress: string | null;
   tokenInfo: any;
+  from: string;
+  to: string;
 }
 
 interface SafeTx {
@@ -176,7 +178,7 @@ const App: React.FC = () => {
 
   // Queue State
   const [queuedTxs, setQueuedTxs] = useState<QueuedTx[]>([]);
-  const [approvalsMap, setApprovalsMap] = useState<Record<string, string[]>>({}); // TxHash -> Array of Owners who approved
+  const [approvalsMap, setApprovalsMap] = useState<Record<string, string[]>>({});
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -220,12 +222,10 @@ const App: React.FC = () => {
     if (storedQueue) setQueuedTxs(JSON.parse(storedQueue));
   }, []);
 
-  // Fetch History when history tab selected
   useEffect(() => {
     if (activeTab === 'history' && selectedNestedSafeAddr) {
       fetchHistory(selectedNestedSafeAddr);
     }
-    // Check approvals when Queue tab selected
     if (activeTab === 'queue' && selectedNestedSafeAddr) {
       checkQueueApprovals();
     }
@@ -263,7 +263,7 @@ const App: React.FC = () => {
     setLoading(false);
   };
 
-  // --- SAFE ACTIONS ---
+  // --- ACTIONS ---
 
   const createParentSafe = async () => {
     const client = await getClient();
@@ -289,12 +289,9 @@ const App: React.FC = () => {
     const client = await getClient();
     if (!client) return;
     const currentParent = mySafes.find(s => s.address === selectedSafeAddr);
-    if (!selectedSafeAddr || !currentParent) {
-      addLog("Please select a Parent Safe in the sidebar.", "error");
-      return;
-    }
-    const confirmed = window.confirm(`Deploy a new Nested Safe owned by "${currentParent.name}"?`);
-    if (!confirmed) return;
+    if (!selectedSafeAddr || !currentParent) return;
+
+    if (!window.confirm(`Deploy a new Nested Safe owned by "${currentParent.name}"?`)) return;
 
     try {
       setLoading(true);
@@ -335,35 +332,21 @@ const App: React.FC = () => {
   const fetchData = async (address: string) => {
     if (!address) return;
     setLoading(true);
-
     const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
 
     try {
       const eth = await publicClient.getBalance({ address: address as Hex });
       setEthBalance(formatEther(eth));
-    } catch { setEthBalance("0"); }
-
-    try {
       const usdc = await publicClient.readContract({ address: USDC_ADDRESS, abi: ERC20_ABI, functionName: "balanceOf", args: [address as Hex] });
       setUsdcBalance(formatUnits(usdc, 6));
-    } catch { setUsdcBalance("0"); }
-
-    try {
       const owners = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "getOwners" });
       setNestedOwners(Array.from(owners));
-    } catch { setNestedOwners([]); }
-
-    try {
       const thresh = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "getThreshold" });
       setNestedThreshold(Number(thresh));
       setNewThresholdInput(Number(thresh));
-    } catch { setNestedThreshold(1); }
-
-    try {
       const nonce = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "nonce" });
       setNestedNonce(Number(nonce));
     } catch { }
-
     setLoading(false);
   };
 
@@ -373,9 +356,7 @@ const App: React.FC = () => {
       const response = await fetch(`${SAFE_TX_SERVICE_URL}/safes/${address}/all-transactions/?ordering=-timestamp&limit=20`);
       if (!response.ok) throw new Error("History fetch failed");
       const data = await response.json();
-
-      console.log("--- HISTORY API RESPONSE ---", data);
-
+      // console.log("--- HISTORY ---", data); // Removed for production, re-enable if debugging
       setTxHistory(data.results || []);
     } catch (e) {
       console.error(e);
@@ -499,10 +480,8 @@ const App: React.FC = () => {
       const parent = mySafes.find(s => s.address === selectedSafeAddr);
       if (!parent) return;
 
-      // 1. Sort owners
       const sortedOwners = [...nestedOwners].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
-      // 2. Build Signatures
       let signatures = "0x";
 
       for (const owner of sortedOwners) {
@@ -722,14 +701,8 @@ const App: React.FC = () => {
                       const approvals = approvalsMap[tx.hash] || [];
                       const hasSigned = approvals.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
 
-                      // Check if we can execute. 
-                      // Conditions: 
-                      // 1. Current approvals + (me if I sign now) >= Threshold
                       const potentialCount = approvals.length + (hasSigned ? 0 : 1);
                       const readyToExec = potentialCount >= nestedThreshold;
-
-                      // If I haven't signed, I can sign.
-                      // If readyToExec is true, I can Execute (which implicitly signs if I haven't already).
 
                       return (
                         <div key={tx.hash} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1rem', marginBottom: '1rem' }}>
@@ -833,22 +806,27 @@ const App: React.FC = () => {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       {txHistory.map((tx, i) => {
                         const isIncoming = tx.txType === 'ETHEREUM_TRANSACTION';
+
+                        // --- DEDUPLICATION LOGIC ---
                         let valueBigInt = BigInt(0);
 
                         if (isIncoming && tx.transfers) {
+                          const seen = new Set<string>();
                           tx.transfers.forEach(t => {
                             if (t.type === 'ETHER_TRANSFER') {
-                              valueBigInt += BigInt(t.value);
+                              // Deduplicate based on exact match of Value+From+To
+                              const key = `${t.value}-${t.from}-${t.to}`;
+                              if (!seen.has(key)) {
+                                valueBigInt += BigInt(t.value);
+                                seen.add(key);
+                              }
                             }
                           });
                         } else if (tx.value) {
                           valueBigInt = BigInt(tx.value);
                         }
 
-                        if (isIncoming && valueBigInt === 0n) {
-                          console.log("Found 0 ETH Incoming TX (Hidden from UI):", tx);
-                          return null;
-                        }
+                        if (isIncoming && valueBigInt === 0n) return null;
 
                         const amount = formatEther(valueBigInt);
                         const date = new Date(tx.executionDate).toLocaleDateString();
