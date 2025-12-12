@@ -16,7 +16,7 @@ import { entryPoint07Address } from "viem/account-abstraction";
 import { createSmartAccountClient } from "permissionless";
 import { toSafeSmartAccount } from "permissionless/accounts";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
-import Safe, { type SafeAccountConfig } from "@safe-global/protocol-kit";
+import Safe from "@safe-global/protocol-kit";
 
 import { connectPhantom } from "./utils/phantom";
 import "./App.css";
