@@ -373,6 +373,9 @@ const App: React.FC = () => {
       const response = await fetch(`${SAFE_TX_SERVICE_URL}/safes/${address}/all-transactions/?ordering=-timestamp&limit=20`);
       if (!response.ok) throw new Error("History fetch failed");
       const data = await response.json();
+
+      console.log("--- HISTORY API RESPONSE ---", data);
+
       setTxHistory(data.results || []);
     } catch (e) {
       console.error(e);
@@ -842,7 +845,10 @@ const App: React.FC = () => {
                           valueBigInt = BigInt(tx.value);
                         }
 
-                        if (isIncoming && valueBigInt === 0n) return null;
+                        if (isIncoming && valueBigInt === 0n) {
+                          console.log("Found 0 ETH Incoming TX (Hidden from UI):", tx);
+                          return null;
+                        }
 
                         const amount = formatEther(valueBigInt);
                         const date = new Date(tx.executionDate).toLocaleDateString();
