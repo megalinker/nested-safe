@@ -28,17 +28,28 @@ const PUBLIC_RPC = "https://sepolia.base.org";
 const SAFE_TX_SERVICE_URL = "https://safe-transaction-base-sepolia.safe.global/api/v1";
 const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
+// --- RHINESTONE ADDRESSES ---
+const SAFE_7579_ADAPTER_ADDRESS = "0x7579f2AD53b01c3D8779Fe17928e0D48885B0003";
+const SMART_SESSIONS_VALIDATOR_ADDRESS = "0x00000000008bdaba73cd9815d79069c247eb4bda";
+
 const SAFE_ABI = parseAbi([
   "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool success)",
   "function addOwnerWithThreshold(address owner, uint256 _threshold) public",
   "function changeThreshold(uint256 _threshold) public",
   "function approveHash(bytes32 hashToApprove) public",
+  "function enableModule(address module) public",
+  "function isModuleEnabled(address module) view returns (bool)",
   "function getOwners() view returns (address[])",
   "function getThreshold() view returns (uint256)",
   "function approvedHashes(address owner, bytes32 hash) view returns (uint256)",
   "function nonce() view returns (uint256)",
   "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 _nonce) view returns (bytes32)"
 ]);
+
+const ADAPTER_7579_ABI = parseAbi([
+  "function installModule(uint256 moduleType, address module, bytes initData) external"
+]);
+
 const ERC20_ABI = parseAbi(["function balanceOf(address owner) view returns (uint256)"]);
 
 // --- ICONS ---
@@ -52,6 +63,8 @@ const Icons = {
   Plus: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
   ChevronDown: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9" /></svg>,
   ExternalLink: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>,
+  Module: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>,
+  Bug: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="4" ry="4" /><path d="M16 3v5" /><path d="M8 3v5" /><path d="M3 11h18" /></svg>
 };
 
 // --- TYPES ---
@@ -81,6 +94,7 @@ interface SafeTx {
 }
 
 interface QueuedTx {
+  safeAddress: string; // NEW: Track which Safe owns this transaction
   hash: string;
   to: string;
   value: string;
@@ -175,9 +189,13 @@ const App: React.FC = () => {
   const [usdcBalance, setUsdcBalance] = useState<string | null>(null);
   const [txHistory, setTxHistory] = useState<SafeTx[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [is7579AdapterEnabled, setIs7579AdapterEnabled] = useState<boolean>(false);
 
   // Queue State
+  // FIX: Using a Ref to track queue synchronously during batch operations
   const [queuedTxs, setQueuedTxs] = useState<QueuedTx[]>([]);
+  const queueRef = useRef<QueuedTx[]>([]);
+
   const [approvalsMap, setApprovalsMap] = useState<Record<string, string[]>>({});
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -219,7 +237,11 @@ const App: React.FC = () => {
     }
 
     const storedQueue = localStorage.getItem("localTxQueue");
-    if (storedQueue) setQueuedTxs(JSON.parse(storedQueue));
+    if (storedQueue) {
+      const parsedQueue = JSON.parse(storedQueue);
+      setQueuedTxs(parsedQueue);
+      queueRef.current = parsedQueue; // Sync Ref
+    }
   }, []);
 
   useEffect(() => {
@@ -344,8 +366,18 @@ const App: React.FC = () => {
       const thresh = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "getThreshold" });
       setNestedThreshold(Number(thresh));
       setNewThresholdInput(Number(thresh));
+
       const nonce = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "nonce" });
       setNestedNonce(Number(nonce));
+
+      const isEnabled = await publicClient.readContract({
+        address: address as Hex,
+        abi: SAFE_ABI,
+        functionName: "isModuleEnabled",
+        args: [SAFE_7579_ADAPTER_ADDRESS]
+      });
+      setIs7579AdapterEnabled(isEnabled);
+
     } catch { }
     setLoading(false);
   };
@@ -356,7 +388,6 @@ const App: React.FC = () => {
       const response = await fetch(`${SAFE_TX_SERVICE_URL}/safes/${address}/all-transactions/?ordering=-timestamp&limit=20`);
       if (!response.ok) throw new Error("History fetch failed");
       const data = await response.json();
-      // console.log("--- HISTORY ---", data); // Removed for production, re-enable if debugging
       setTxHistory(data.results || []);
     } catch (e) {
       console.error(e);
@@ -366,41 +397,125 @@ const App: React.FC = () => {
     }
   };
 
+  const handleRefreshQueue = async () => {
+    addLog("Refreshing Queue & Nonce...", "info");
+    await fetchData(selectedNestedSafeAddr);
+    await checkQueueApprovals();
+  };
+
   // --- MULTI-SIG LOGIC ---
 
-  const getSafeTxHash = async (to: string, val: bigint, data: Hex) => {
+  const getSafeTxHash = async (to: string, val: bigint, data: Hex, nonceOffset = 0) => {
     const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+    const currentNonce = await publicClient.readContract({ address: selectedNestedSafeAddr as Hex, abi: SAFE_ABI, functionName: "nonce" });
+    const targetNonce = Number(currentNonce) + nonceOffset;
+
     const hash = await publicClient.readContract({
       address: selectedNestedSafeAddr as Hex,
       abi: SAFE_ABI,
       functionName: "getTransactionHash",
-      args: [to as Hex, val, data, 0, 0n, 0n, 0n, "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000", BigInt(nestedNonce)]
+      args: [to as Hex, val, data, 0, 0n, 0n, 0n, "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000", BigInt(targetNonce)]
     });
-    return hash;
+    return { hash, nonce: targetNonce };
   };
 
-  const proposeTransaction = async (to: string, val: bigint, data: Hex, description: string) => {
+  const proposeTransaction = async (to: string, val: bigint, data: Hex, description: string, nonceOffset = 0) => {
     try {
       setLoading(true);
-      const hash = await getSafeTxHash(to, val, data);
+      // addLog(`Calculating Hash for Nonce offset ${nonceOffset}...`, "info");
+      const { hash, nonce } = await getSafeTxHash(to, val, data, nonceOffset);
 
       const newTx: QueuedTx = {
+        safeAddress: selectedNestedSafeAddr, // FIX: Track Safe Address
         hash,
         to,
         value: val.toString(),
         data,
-        nonce: nestedNonce,
+        nonce,
         description
       };
 
-      const updatedQueue = [...queuedTxs, newTx];
-      setQueuedTxs(updatedQueue);
-      localStorage.setItem("localTxQueue", JSON.stringify(updatedQueue));
+      // FIX: Use Ref to guarantee atomic updates regardless of React render cycles
+      const currentQueue = queueRef.current;
 
-      addLog("Transaction Added to Queue.", "success");
+      // Prevent duplicates based on hash
+      if (currentQueue.some(t => t.hash === hash)) {
+        addLog(`Transaction ${description} already in queue.`, "info");
+      } else {
+        const updatedQueue = [...currentQueue, newTx];
+
+        // Update Ref immediately for next calls in same cycle
+        queueRef.current = updatedQueue;
+
+        // Update State for UI
+        setQueuedTxs(updatedQueue);
+
+        localStorage.setItem("localTxQueue", JSON.stringify(updatedQueue));
+        addLog(`Proposed: ${description} (Nonce ${nonce})`, "success");
+      }
+
       setActiveTab('queue');
     } catch (e: any) {
       addLog(`Proposal failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- RHINESTONE MODULE LOGIC ---
+
+  const handleInstallSmartSession = async () => {
+    if (!isCurrentSafeOwner) {
+      addLog("Only owner can install modules", "error");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      let offset = 0;
+
+      // 1. Enable 7579 Adapter on the Nested Safe (if not present)
+      if (!is7579AdapterEnabled) {
+        const enableData = encodeFunctionData({
+          abi: SAFE_ABI,
+          functionName: "enableModule",
+          args: [SAFE_7579_ADAPTER_ADDRESS]
+        });
+        await proposeTransaction(
+          selectedNestedSafeAddr, // Call self
+          0n,
+          enableData,
+          "Enable Safe 7579 Adapter",
+          offset
+        );
+        offset++;
+      } else {
+        addLog("Safe 7579 Adapter already enabled.", "info");
+      }
+
+      // 2. Install Smart Session Validator via the Adapter
+      const installData = encodeFunctionData({
+        abi: ADAPTER_7579_ABI,
+        functionName: "installModule",
+        args: [
+          1n, // Module Type Validator
+          SMART_SESSIONS_VALIDATOR_ADDRESS, // The Module
+          "0x" // No init data needed for this validator
+        ]
+      });
+
+      await proposeTransaction(
+        SAFE_7579_ADAPTER_ADDRESS, // Call the Adapter
+        0n,
+        installData,
+        "Install Smart Session Validator",
+        offset
+      );
+
+      addLog("Module installation transactions added to Queue.", "success");
+
+    } catch (e: any) {
+      addLog(`Failed to propose module installation: ${e.message}`, "error");
     } finally {
       setLoading(false);
     }
@@ -441,7 +556,7 @@ const App: React.FC = () => {
       });
 
       addLog(`Approved Hash! TX: ${txHash}`, "success");
-      setTimeout(() => checkQueueApprovals(), 4000);
+      setTimeout(() => handleRefreshQueue(), 4000);
     } catch (e: any) {
       addLog(`Approval Failed: ${e.message}`, "error");
     } finally {
@@ -450,10 +565,17 @@ const App: React.FC = () => {
   };
 
   const checkQueueApprovals = async () => {
+    if (!selectedNestedSafeAddr) return;
     const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
     const newMap: Record<string, string[]> = {};
 
-    for (const tx of queuedTxs) {
+    // FIX: Only check items for the current Safe
+    const relevantTxs = queuedTxs.filter(t =>
+      !t.safeAddress || // Legacy items might not have it
+      t.safeAddress.toLowerCase() === selectedNestedSafeAddr.toLowerCase()
+    );
+
+    for (const tx of relevantTxs) {
       if (tx.nonce < nestedNonce) continue;
 
       const approvedBy: string[] = [];
@@ -531,8 +653,10 @@ const App: React.FC = () => {
 
       addLog(`Execution Sent! TX: ${hash}`, "success");
 
+      // Remove executed tx
       const newQueue = queuedTxs.filter(t => t.hash !== tx.hash);
       setQueuedTxs(newQueue);
+      queueRef.current = newQueue; // Sync ref
       localStorage.setItem("localTxQueue", JSON.stringify(newQueue));
 
       setTimeout(() => {
@@ -560,7 +684,24 @@ const App: React.FC = () => {
     await proposeTransaction(selectedNestedSafeAddr, 0n, data, `Change Threshold to ${newThresholdInput}`);
   };
 
+  const debugClearQueue = () => {
+    setQueuedTxs([]);
+    queueRef.current = [];
+    localStorage.removeItem("localTxQueue");
+    addLog("Queue cleared via Debug", "info");
+  };
+
   const isDashboard = myNestedSafes.length > 0;
+
+  // FIX: Filter queue by current safe address
+  const currentSafeQueue = queuedTxs.filter(t => {
+    if (!selectedNestedSafeAddr) return false;
+    // Handle legacy items (no safeAddress) or current safe items
+    // If legacy, we assume it might be for the first safe or we hide it. 
+    // Safe option: only show if match or if array is small/legacy mode.
+    // Better: strict match. If they are legacy, clear them via debug.
+    return t.safeAddress && t.safeAddress.toLowerCase() === selectedNestedSafeAddr.toLowerCase();
+  });
 
   return (
     <div className="app-container">
@@ -658,7 +799,7 @@ const App: React.FC = () => {
               <button className={`tab-btn ${activeTab === 'transfer' ? 'active' : ''}`} onClick={() => setActiveTab('transfer')}>Transfer</button>
               <button className={`tab-btn ${activeTab === 'owners' ? 'active' : ''}`} onClick={() => setActiveTab('owners')}>Owners</button>
               <button className={`tab-btn ${activeTab === 'queue' ? 'active' : ''}`} onClick={() => setActiveTab('queue')}>
-                Queue {queuedTxs.filter(t => t.nonce >= nestedNonce).length > 0 && <span className="header-badge" style={{ background: 'var(--primary)', border: 'none', marginLeft: '6px' }}>{queuedTxs.filter(t => t.nonce >= nestedNonce).length}</span>}
+                Queue {currentSafeQueue.filter(t => t.nonce >= nestedNonce).length > 0 && <span className="header-badge" style={{ background: 'var(--primary)', border: 'none', marginLeft: '6px' }}>{currentSafeQueue.filter(t => t.nonce >= nestedNonce).length}</span>}
               </button>
               <button className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</button>
               <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>Settings</button>
@@ -690,26 +831,27 @@ const App: React.FC = () => {
               {activeTab === 'queue' && (
                 <div>
                   <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
-                    <span>Pending Transactions (Nonce {nestedNonce})</span>
-                    <button onClick={checkQueueApprovals} className="icon-btn"><Icons.Refresh /></button>
+                    <span>Pending Transactions (Next Nonce: {nestedNonce})</span>
+                    <button onClick={handleRefreshQueue} className="icon-btn" title="Force Refresh Queue & Nonce"><Icons.Refresh /></button>
                   </div>
 
-                  {queuedTxs.filter(t => t.nonce >= nestedNonce).length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>No pending transactions.</div>
+                  {currentSafeQueue.filter(t => t.nonce >= nestedNonce).length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>No pending transactions for this Safe.</div>
                   ) : (
-                    queuedTxs.filter(t => t.nonce >= nestedNonce).map(tx => {
+                    currentSafeQueue.filter(t => t.nonce >= nestedNonce).sort((a, b) => a.nonce - b.nonce).map(tx => {
                       const approvals = approvalsMap[tx.hash] || [];
                       const hasSigned = approvals.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
 
                       const potentialCount = approvals.length + (hasSigned ? 0 : 1);
                       const readyToExec = potentialCount >= nestedThreshold;
+                      const isNext = tx.nonce === nestedNonce;
 
                       return (
-                        <div key={tx.hash} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1rem', marginBottom: '1rem' }}>
+                        <div key={tx.hash} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1rem', marginBottom: '1rem', opacity: isNext ? 1 : 0.6 }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '10px' }}>
                             <div style={{ fontWeight: '600' }}>{tx.description}</div>
                             <div className="header-badge" style={{ background: approvals.length >= nestedThreshold ? 'var(--success)' : 'var(--surface-3)', color: 'white' }}>
-                              {approvals.length} / {nestedThreshold} Signatures
+                              Nonce {tx.nonce}
                             </div>
                           </div>
                           <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem', fontFamily: 'monospace' }}>
@@ -723,16 +865,23 @@ const App: React.FC = () => {
                               </button>
                             )}
 
-                            {readyToExec && (
+                            {readyToExec && isNext && (
                               <button className="action-btn" onClick={() => executeQueuedTx(tx)} disabled={loading || !isCurrentSafeOwner}>
                                 Execute Transaction
                               </button>
                             )}
+                            {(!isNext) && <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', alignSelf: 'center' }}>Waiting for previous nonce...</span>}
                           </div>
                         </div>
                       );
                     })
                   )}
+
+                  {queuedTxs.length > 0 && <div style={{ textAlign: 'center', marginTop: '2rem' }}>
+                    <button className="action-btn small secondary" style={{ width: 'auto', display: 'inline-block' }} onClick={debugClearQueue}>
+                      Debug: Clear Queue LocalStorage
+                    </button>
+                  </div>}
                 </div>
               )}
 
@@ -862,15 +1011,60 @@ const App: React.FC = () => {
               )}
 
               {activeTab === 'settings' && (
-                <div>
-                  <h3 style={{ margin: '0 0 1rem 0' }}>Reset App</h3>
-                  <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-                    Clear stored data to restart the onboarding flow. (Safes remain on-chain).
-                  </p>
-                  <button className="action-btn secondary" onClick={() => {
-                    localStorage.clear();
-                    window.location.reload();
-                  }}>Clear Storage & Reset</button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+
+                  {/* --- NEW RHINESTONE MODULE SECTION --- */}
+                  <div>
+                    <h3 style={{ margin: '0 0 1rem 0' }}>Rhinestone Modules</h3>
+                    <div style={{
+                      background: 'var(--surface-1)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '8px',
+                      padding: '1.5rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '1.5rem'
+                    }}>
+                      <div style={{
+                        width: '40px', height: '40px',
+                        background: 'rgba(99, 102, 241, 0.1)',
+                        color: 'var(--primary)',
+                        borderRadius: '8px',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                      }}>
+                        <Icons.Module />
+                      </div>
+
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>Smart Sessions</div>
+                        <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                          Enables session keys and automated transactions via ERC-7579.
+                        </div>
+                      </div>
+
+                      <button
+                        className="action-btn small"
+                        onClick={handleInstallSmartSession}
+                        disabled={loading || !isCurrentSafeOwner}
+                        style={{ width: 'auto' }}
+                      >
+                        Install Module
+                      </button>
+                    </div>
+                  </div>
+
+                  <hr style={{ borderColor: 'var(--border)' }} />
+
+                  <div>
+                    <h3 style={{ margin: '0 0 1rem 0' }}>Reset App</h3>
+                    <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                      Clear stored data to restart the onboarding flow. (Safes remain on-chain).
+                    </p>
+                    <button className="action-btn secondary" onClick={() => {
+                      localStorage.clear();
+                      window.location.reload();
+                    }}>Clear Storage & Reset</button>
+                  </div>
                 </div>
               )}
             </div>
