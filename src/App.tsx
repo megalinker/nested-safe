@@ -1,5 +1,3 @@
-//--- File: src/App.tsx ---
-
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import {
   createPublicClient,
@@ -12,8 +10,7 @@ import {
   parseEther,
   formatEther,
   formatUnits,
-  concat,
-  getAddress
+  concat
 } from "viem";
 import { baseSepolia } from "viem/chains";
 import { entryPoint07Address } from "viem/account-abstraction";
@@ -35,7 +32,6 @@ const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 // --- RHINESTONE ADDRESSES ---
 const SAFE_7579_ADAPTER_ADDRESS = "0x7579f2AD53b01c3D8779Fe17928e0D48885B0003";
 const SMART_SESSIONS_VALIDATOR_ADDRESS = "0x00000000008bdaba73cd9815d79069c247eb4bda";
-const ENTRYPOINT_ADDRESS = "0x0000000071727De22E5E9d8BAf0edAc6f37da032";
 
 // Storage slot for Safe Fallback Handler
 const FALLBACK_HANDLER_STORAGE_SLOT = "0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5";
@@ -202,7 +198,7 @@ const App: React.FC = () => {
   const [usdcBalance, setUsdcBalance] = useState<string | null>(null);
   const [txHistory, setTxHistory] = useState<SafeTx[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  
+
   // Module State
   const [is7579AdapterEnabled, setIs7579AdapterEnabled] = useState<boolean>(false);
   const [currentFallbackHandler, setCurrentFallbackHandler] = useState<string>("0x");
@@ -210,7 +206,7 @@ const App: React.FC = () => {
 
   // Queue State
   const [queuedTxs, setQueuedTxs] = useState<QueuedTx[]>([]);
-  const queueRef = useRef<QueuedTx[]>([]); 
+  const queueRef = useRef<QueuedTx[]>([]);
 
   const [approvalsMap, setApprovalsMap] = useState<Record<string, string[]>>({});
 
@@ -382,15 +378,15 @@ const App: React.FC = () => {
       const thresh = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "getThreshold" });
       setNestedThreshold(Number(thresh));
       setNewThresholdInput(Number(thresh));
-      
+
       const nonce = await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "nonce" });
       setNestedNonce(Number(nonce));
-      
-      const isEnabled = await publicClient.readContract({ 
-        address: address as Hex, 
-        abi: SAFE_ABI, 
-        functionName: "isModuleEnabled", 
-        args: [SAFE_7579_ADAPTER_ADDRESS] 
+
+      const isEnabled = await publicClient.readContract({
+        address: address as Hex,
+        abi: SAFE_ABI,
+        functionName: "isModuleEnabled",
+        args: [SAFE_7579_ADAPTER_ADDRESS]
       });
       setIs7579AdapterEnabled(isEnabled);
 
@@ -402,29 +398,15 @@ const App: React.FC = () => {
       const handlerAddress = fallbackHandler ? `0x${fallbackHandler.slice(-40)}` : "0x";
       setCurrentFallbackHandler(handlerAddress);
 
-      // Check if Validator is installed (Simulate Access Control of Adapter via Safe context)
-      // Since isModuleInstalled is view, we can call it on the Adapter
-      // BUT we need to emulate msg.sender = Safe.
-      // We can't easily emulate msg.sender in a view call without 'stateOverride' or 4337 simulation.
-      // We will blindly try to read it via the Adapter Call, appending safe address.
-      try {
-        const isInstalled = await publicClient.readContract({
-            address: SAFE_7579_ADAPTER_ADDRESS,
-            abi: ADAPTER_7579_ABI,
-            functionName: "isModuleInstalled",
-            args: [1n, SMART_SESSIONS_VALIDATOR_ADDRESS, "0x"],
-            // Append safe address to emulate msg.sender for the View call too!
-            // Note: viem readContract doesn't support raw data appending easily on arguments.
-            // We'll skip verification here and rely on UI state for now, or use a low-level call if needed.
-        });
-        // The above call will fail because we didn't append the sender address to calldata.
-        // So we default to false or rely on successful execution of tx.
-      } catch (e) {
-          // Expected to fail in view mode due to missing context
+      // Attempt to check if validator is installed. 
+      // Since 'isModuleInstalled' on the adapter requires msg.sender to be the Safe,
+      // we can't accurately query this via simple readContract from the frontend without simulation.
+      // However, if we assume the user followed the steps, we can optimistically set this if the Adapter is enabled & fallback is set.
+      // For a robust app, we would use a read-only call simulation with state overrides.
+      if (isEnabled && handlerAddress.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase()) {
+        // Logic to determine if "Step 3" was executed. For now, rely on session/local state or user flow.
+        // setIsValidatorInstalled(true); // Can't definitively check on-chain easily
       }
-      
-      // For now, if steps 1-3 are done and step 4 executed, we assume success. 
-      // A robust check requires a `eth_call` with raw data manipulation.
 
     } catch { }
     setLoading(false);
@@ -457,7 +439,7 @@ const App: React.FC = () => {
     const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
     const currentNonce = await publicClient.readContract({ address: selectedNestedSafeAddr as Hex, abi: SAFE_ABI, functionName: "nonce" });
     const targetNonce = Number(currentNonce) + nonceOffset;
-    
+
     // Hash includes operation type
     const hash = await publicClient.readContract({
       address: selectedNestedSafeAddr as Hex,
@@ -485,8 +467,8 @@ const App: React.FC = () => {
       };
 
       const currentQueue = queueRef.current;
-      
-      if(currentQueue.some(t => t.hash === hash)) {
+
+      if (currentQueue.some(t => t.hash === hash)) {
         addLog(`Transaction ${description} already in queue.`, "info");
       } else {
         const updatedQueue = [...currentQueue, newTx];
@@ -508,102 +490,103 @@ const App: React.FC = () => {
 
   const handleInstallSmartSession = async () => {
     if (!isCurrentSafeOwner) {
-        addLog("Only owner can install modules", "error");
-        return;
+      addLog("Only owner can install modules", "error");
+      return;
     }
 
     try {
-        setLoading(true);
-        let offset = 0;
+      setLoading(true);
+      let offset = 0;
 
-        // 1. Enable 7579 Adapter as Module (Call)
-        if (!is7579AdapterEnabled) {
-            const enableData = encodeFunctionData({
-                abi: SAFE_ABI,
-                functionName: "enableModule",
-                args: [SAFE_7579_ADAPTER_ADDRESS]
-            });
-            await proposeTransaction(
-                selectedNestedSafeAddr, // Call self
-                0n,
-                enableData,
-                "1. Enable Safe 7579 Adapter",
-                offset,
-                0 // Call
-            );
-            offset++;
-        }
+      // 1. Enable 7579 Adapter as Module (Call)
+      if (!is7579AdapterEnabled) {
+        const enableData = encodeFunctionData({
+          abi: SAFE_ABI,
+          functionName: "enableModule",
+          args: [SAFE_7579_ADAPTER_ADDRESS]
+        });
+        await proposeTransaction(
+          selectedNestedSafeAddr, // Call self
+          0n,
+          enableData,
+          "1. Enable Safe 7579 Adapter",
+          offset,
+          0 // Call
+        );
+        offset++;
+      }
 
-        // 2. Set Adapter as Fallback Handler (Call)
-        const isFallbackSet = currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase();
-        
-        if (!isFallbackSet) {
-            const fallbackData = encodeFunctionData({
-                abi: SAFE_ABI,
-                functionName: "setFallbackHandler",
-                args: [SAFE_7579_ADAPTER_ADDRESS]
-            });
-            await proposeTransaction(
-                selectedNestedSafeAddr, // Call self
-                0n,
-                fallbackData,
-                "2. Set 7579 Adapter as Fallback Handler",
-                offset,
-                0 // Call
-            );
-            offset++;
-        }
+      // 2. Set Adapter as Fallback Handler (Call)
+      const isFallbackSet = currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase();
 
-        // 3. Initialize Adapter & Install Validator via CALL (Op 0)
-        // Check if we assume it's installed (simple logic for now since view read is hard)
-        // We propose it anyway if steps 1 & 2 are done.
-        
-        if (walletClient?.account && is7579AdapterEnabled && isFallbackSet) {
-            // Build the init call data
-            const initData = encodeFunctionData({
-                abi: ADAPTER_7579_ABI,
-                functionName: "initializeAccount",
-                args: [
-                    [{ 
-                        module: SMART_SESSIONS_VALIDATOR_ADDRESS, 
-                        initData: "0x", 
-                        moduleType: 1n 
-                    }],
-                    { 
-                        registry: "0x0000000000000000000000000000000000000000", 
-                        attesters: [], 
-                        threshold: 0 
-                    }
-                ]
-            });
+      if (!isFallbackSet) {
+        const fallbackData = encodeFunctionData({
+          abi: SAFE_ABI,
+          functionName: "setFallbackHandler",
+          args: [SAFE_7579_ADAPTER_ADDRESS]
+        });
+        await proposeTransaction(
+          selectedNestedSafeAddr, // Call self
+          0n,
+          fallbackData,
+          "2. Set 7579 Adapter as Fallback Handler",
+          offset,
+          0 // Call
+        );
+        offset++;
+      }
 
-            // Append SAFE address (20 bytes) to the calldata
-            const paddedAddress = selectedNestedSafeAddr.slice(2);
-            const dataWithContext = concat([initData, `0x${paddedAddress}` as Hex]);
+      // 3. Initialize Adapter & Install Validator via CALL (Op 0)
+      // CRITICAL: Use Call (Op 0) to Adapter. Append SAFE ADDRESS to emulate 2771 msg.sender.
 
-            await proposeTransaction(
-                SAFE_7579_ADAPTER_ADDRESS, // Call the Adapter Directly
-                0n,
-                dataWithContext, // Use payload with appended SAFE ADDRESS
-                "3. Init Adapter & Install Validator",
-                offset,
-                0 // Call (Operation 0)
-            );
-            
-            // Assume success locally for UI update after execution
-            setIsValidatorInstalled(true); 
-        } else if (!walletClient?.account) {
-            addLog("Error: Wallet not connected.", "error");
-        } else {
-             addLog("Finish Steps 1 & 2 first.", "info");
-        }
+      // Only propose this if previous steps are done (or if we are chaining them now).
+      // Since we check the bools above, we only propose Step 3 if we are proposing steps 1 & 2 or if they are done.
 
-        addLog("Transactions added to Queue.", "success");
+      if (walletClient?.account) {
+        // Build the init call data
+        const initData = encodeFunctionData({
+          abi: ADAPTER_7579_ABI,
+          functionName: "initializeAccount",
+          args: [
+            [{
+              module: SMART_SESSIONS_VALIDATOR_ADDRESS,
+              initData: "0x",
+              moduleType: 1n
+            }],
+            {
+              registry: "0x0000000000000000000000000000000000000000",
+              attesters: [],
+              threshold: 0
+            }
+          ]
+        });
+
+        // Append SAFE address (20 bytes) to the calldata
+        // This satisfies `onlyEntryPointOrSelf` in the Adapter, as `_msgSender()` will read the appended address.
+        const paddedAddress = selectedNestedSafeAddr.slice(2);
+        const dataWithContext = concat([initData, `0x${paddedAddress}` as Hex]);
+
+        await proposeTransaction(
+          SAFE_7579_ADAPTER_ADDRESS, // Call the Adapter Directly
+          0n,
+          dataWithContext, // Use payload with appended SAFE ADDRESS
+          "3. Init Adapter & Install Validator",
+          offset,
+          0 // Call (Operation 0)
+        );
+
+        // Assume success locally for UI update after execution
+        setIsValidatorInstalled(true);
+      } else {
+        addLog("Error: Wallet not connected.", "error");
+      }
+
+      addLog("Transactions added to Queue.", "success");
 
     } catch (e: any) {
-        addLog(`Failed to propose module installation: ${e.message}`, "error");
+      addLog(`Failed to propose module installation: ${e.message}`, "error");
     } finally {
-        setLoading(false);
+      setLoading(false);
     }
   };
 
@@ -655,8 +638,8 @@ const App: React.FC = () => {
     const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
     const newMap: Record<string, string[]> = {};
 
-    const relevantTxs = queuedTxs.filter(t => 
-      !t.safeAddress || 
+    const relevantTxs = queuedTxs.filter(t =>
+      !t.safeAddress ||
       t.safeAddress.toLowerCase() === selectedNestedSafeAddr.toLowerCase()
     );
 
@@ -741,7 +724,7 @@ const App: React.FC = () => {
 
       const newQueue = queuedTxs.filter(t => t.hash !== tx.hash);
       setQueuedTxs(newQueue);
-      queueRef.current = newQueue; 
+      queueRef.current = newQueue;
       localStorage.setItem("localTxQueue", JSON.stringify(newQueue));
 
       setTimeout(() => {
@@ -768,19 +751,19 @@ const App: React.FC = () => {
     const data = encodeFunctionData({ abi: SAFE_ABI, functionName: "changeThreshold", args: [BigInt(newThresholdInput)] });
     await proposeTransaction(selectedNestedSafeAddr, 0n, data, `Change Threshold to ${newThresholdInput}`, 0, 0);
   };
-  
+
   const debugClearQueue = () => {
-      setQueuedTxs([]);
-      queueRef.current = [];
-      localStorage.removeItem("localTxQueue");
-      addLog("Queue cleared via Debug", "info");
+    setQueuedTxs([]);
+    queueRef.current = [];
+    localStorage.removeItem("localTxQueue");
+    addLog("Queue cleared via Debug", "info");
   };
 
   const isDashboard = myNestedSafes.length > 0;
 
   const currentSafeQueue = queuedTxs.filter(t => {
-      if (!selectedNestedSafeAddr) return false;
-      return t.safeAddress && t.safeAddress.toLowerCase() === selectedNestedSafeAddr.toLowerCase();
+    if (!selectedNestedSafeAddr) return false;
+    return t.safeAddress && t.safeAddress.toLowerCase() === selectedNestedSafeAddr.toLowerCase();
   });
 
   return (
@@ -918,7 +901,7 @@ const App: React.FC = () => {
                   {currentSafeQueue.filter(t => t.nonce >= nestedNonce).length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>No pending transactions for this Safe.</div>
                   ) : (
-                    currentSafeQueue.filter(t => t.nonce >= nestedNonce).sort((a,b) => a.nonce - b.nonce).map(tx => {
+                    currentSafeQueue.filter(t => t.nonce >= nestedNonce).sort((a, b) => a.nonce - b.nonce).map(tx => {
                       const approvals = approvalsMap[tx.hash] || [];
                       const hasSigned = approvals.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
 
@@ -950,17 +933,17 @@ const App: React.FC = () => {
                                 Execute Transaction
                               </button>
                             )}
-                            {(!isNext) && <span style={{fontSize: '0.8rem', color: 'var(--text-secondary)', alignSelf: 'center'}}>Waiting for previous nonce...</span>}
+                            {(!isNext) && <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', alignSelf: 'center' }}>Waiting for previous nonce...</span>}
                           </div>
                         </div>
                       );
                     })
                   )}
-                  
-                  {queuedTxs.length > 0 && <div style={{textAlign: 'center', marginTop: '2rem'}}>
-                      <button className="action-btn small secondary" style={{width: 'auto', display: 'inline-block'}} onClick={debugClearQueue}>
-                        Debug: Clear Queue LocalStorage
-                      </button>
+
+                  {queuedTxs.length > 0 && <div style={{ textAlign: 'center', marginTop: '2rem' }}>
+                    <button className="action-btn small secondary" style={{ width: 'auto', display: 'inline-block' }} onClick={debugClearQueue}>
+                      Debug: Clear Queue LocalStorage
+                    </button>
                   </div>}
                 </div>
               )}
@@ -1020,49 +1003,119 @@ const App: React.FC = () => {
                 </>
               )}
 
+              {activeTab === 'history' && (
+                <div>
+                  <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Recent Transactions</span>
+                    <button onClick={() => fetchHistory(selectedNestedSafeAddr)} className="icon-btn"><Icons.Refresh /></button>
+                  </div>
+
+                  {loadingHistory ? (
+                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '2rem' }}>Loading history...</div>
+                  ) : txHistory.length === 0 ? (
+                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '2rem' }}>No transactions found.</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {txHistory.map((tx, i) => {
+                        const isIncoming = tx.txType === 'ETHEREUM_TRANSACTION';
+
+                        // --- DEDUPLICATION LOGIC ---
+                        let valueBigInt = BigInt(0);
+
+                        if (isIncoming && tx.transfers) {
+                          const seen = new Set<string>();
+                          tx.transfers.forEach(t => {
+                            if (t.type === 'ETHER_TRANSFER') {
+                              // Deduplicate based on exact match of Value+From+To
+                              const key = `${t.value}-${t.from}-${t.to}`;
+                              if (!seen.has(key)) {
+                                valueBigInt += BigInt(t.value);
+                                seen.add(key);
+                              }
+                            }
+                          });
+                        } else if (tx.value) {
+                          valueBigInt = BigInt(tx.value);
+                        }
+
+                        if (isIncoming && valueBigInt === 0n) return null;
+
+                        const amount = formatEther(valueBigInt);
+                        const date = new Date(tx.executionDate).toLocaleDateString();
+
+                        let label = isIncoming ? "Received ETH" : "Executed TX";
+                        const counterParty = isIncoming ? tx.from : tx.to;
+                        const matchedSafe = mySafes.find(s => s.address.toLowerCase() === counterParty?.toLowerCase()) ||
+                          myNestedSafes.find(s => s.address.toLowerCase() === counterParty?.toLowerCase());
+
+                        return (
+                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: 'var(--surface-1)', borderRadius: '8px', borderLeft: isIncoming ? '4px solid var(--success)' : '4px solid var(--primary)' }}>
+                            <div>
+                              <div style={{ fontWeight: '600', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                {label}
+                                {matchedSafe && <span className="owner-tag" style={{ background: 'rgba(255,255,255,0.1)', color: 'white' }}>{matchedSafe.name}</span>}
+                              </div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{date}</div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontWeight: '600' }}>{amount} ETH</div>
+                              {tx.transactionHash && (
+                                <a href={`https://sepolia.basescan.org/tx/${tx.transactionHash}`} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px', justifyContent: 'flex-end' }}>
+                                  Explorer <Icons.ExternalLink />
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {activeTab === 'settings' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-                  
+
                   {/* --- NEW RHINESTONE MODULE SECTION --- */}
                   <div>
                     <h3 style={{ margin: '0 0 1rem 0' }}>Rhinestone Modules</h3>
-                    
+
                     {/* Fallback Handler Status */}
                     <div style={{ marginBottom: '1rem', padding: '12px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                        <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                            <span>Fallback Handler:</span>
-                            <span style={{fontFamily: 'monospace'}}>{currentFallbackHandler}</span>
-                        </div>
-                        {currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase() ? 
-                            <span style={{color: 'var(--success)'}}>✓ Safe 7579 Adapter Active</span> : 
-                            <span style={{color: '#fbbf24'}}>⚠ Standard Safe Handler (Upgrade Needed)</span>
-                        }
-                        
-                        <div style={{display: 'flex', justifyContent: 'space-between', marginTop: '8px'}}>
-                            <span>Validator Status:</span>
-                            <span>{isValidatorInstalled || (is7579AdapterEnabled && currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase()) ? "Installed" : "Not Installed"}</span>
-                        </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span>Fallback Handler:</span>
+                        <span style={{ fontFamily: 'monospace' }}>{currentFallbackHandler}</span>
+                      </div>
+                      {currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase() ?
+                        <span style={{ color: 'var(--success)' }}>✓ Safe 7579 Adapter Active</span> :
+                        <span style={{ color: '#fbbf24' }}>⚠ Standard Safe Handler (Upgrade Needed)</span>
+                      }
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px' }}>
+                        <span>Validator Status:</span>
+                        <span>{isValidatorInstalled || (is7579AdapterEnabled && currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase() && isValidatorInstalled) ? "Installed" : "Not Installed"}</span>
+                      </div>
                     </div>
 
-                    <div style={{ 
-                      background: 'var(--surface-1)', 
-                      border: '1px solid var(--border)', 
-                      borderRadius: '8px', 
-                      padding: '1.5rem', 
+                    <div style={{
+                      background: 'var(--surface-1)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '8px',
+                      padding: '1.5rem',
                       display: 'flex',
                       alignItems: 'center',
                       gap: '1.5rem'
                     }}>
-                      <div style={{ 
-                        width: '40px', height: '40px', 
-                        background: 'rgba(99, 102, 241, 0.1)', 
+                      <div style={{
+                        width: '40px', height: '40px',
+                        background: 'rgba(99, 102, 241, 0.1)',
                         color: 'var(--primary)',
                         borderRadius: '8px',
                         display: 'flex', alignItems: 'center', justifyContent: 'center'
                       }}>
                         <Icons.Module />
                       </div>
-                      
+
                       <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: '600', marginBottom: '4px' }}>Smart Sessions</div>
                         <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
@@ -1070,16 +1123,16 @@ const App: React.FC = () => {
                         </div>
                       </div>
 
-                      {!(isValidatorInstalled || (is7579AdapterEnabled && currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase())) && <button 
-                        className="action-btn small" 
+                      {!(isValidatorInstalled || (is7579AdapterEnabled && currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase() && isValidatorInstalled)) && <button
+                        className="action-btn small"
                         onClick={handleInstallSmartSession}
                         disabled={loading || !isCurrentSafeOwner}
                         style={{ width: 'auto' }}
                       >
                         Install Module
                       </button>}
-                      
-                      {(isValidatorInstalled || (is7579AdapterEnabled && currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase())) && <div className="header-badge" style={{background: 'var(--success)', color: 'white'}}>Installed</div>}
+
+                      {(isValidatorInstalled || (is7579AdapterEnabled && currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase() && isValidatorInstalled)) && <div className="header-badge" style={{ background: 'var(--success)', color: 'white' }}>Installed</div>}
                     </div>
                   </div>
 
