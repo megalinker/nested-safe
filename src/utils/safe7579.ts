@@ -1,5 +1,3 @@
-//--- File: src/utils/safe7579.ts ---
-
 import {
     type Address,
     type Hex,
@@ -10,7 +8,6 @@ import {
     parseAbi,
     keccak256,
     encodeAbiParameters,
-    pad,
 } from "viem";
 import {
     toSmartAccount,
@@ -21,7 +18,6 @@ import {
 } from "viem/account-abstraction";
 
 // --- Constants ---
-export const OWNABLE_VALIDATOR_ADDRESS = "0x000000000013fdb5234e4e3162a810f54d9f7e98";
 export const SMART_SESSIONS_VALIDATOR_ADDRESS = "0x00000000008bdaba73cd9815d79069c247eb4bda";
 
 // --- ABIs ---
@@ -35,20 +31,6 @@ const NONCE_ABI = parseAbi([
 
 // --- Helpers ---
 
-export const encodePolicy = (type: 'value' | 'usage' | 'sudo', limit?: bigint | string): { policy: Address; initData: Hex } => {
-    const VALUE_LIMIT_POLICY = "0x730DA93267E7E513e932301B47F2ac7D062abC83";
-    const USAGE_LIMIT_POLICY = "0x1F34eF8311345A3A4a4566aF321b313052F51493";
-    const SUDO_POLICY = "0x0000003111cD8e92337C100F22B7A9dbf8DEE301";
-
-    if (type === 'sudo') return { policy: SUDO_POLICY as Address, initData: "0x" };
-
-    const limitBn = BigInt(limit!);
-
-    if (type === 'value') return { policy: VALUE_LIMIT_POLICY as Address, initData: encodeAbiParameters([{ type: 'uint256' }], [limitBn]) };
-    if (type === 'usage') return { policy: USAGE_LIMIT_POLICY as Address, initData: encodePacked(['uint128'], [limitBn]) };
-    return { policy: "0x0000000000000000000000000000000000000000", initData: "0x" };
-};
-
 export const getPermissionId = (session: any): Hex => {
     return keccak256(encodeAbiParameters(
         [{ type: 'address' }, { type: 'bytes' }, { type: 'bytes32' }],
@@ -56,36 +38,10 @@ export const getPermissionId = (session: any): Hex => {
     ));
 };
 
-export const createSessionStruct = (sessionOwner: Address, targetAddress: Address, amountWei: bigint, salt: Hex) => {
-    return {
-        sessionValidator: OWNABLE_VALIDATOR_ADDRESS as Address,
-        sessionValidatorInitData: encodeAbiParameters(
-            [{ name: 'threshold', type: 'uint256' }, { name: 'owners', type: 'address[]' }],
-            [1n, [sessionOwner]]
-        ),
-        salt: salt,
-        userOpPolicies: [],
-        erc7739Policies: { allowedERC7739Content: [], erc1271Policies: [] },
-        actions: [{
-            actionTarget: targetAddress,
-            actionTargetSelector: "0x00000000" as Hex,
-            actionPolicies: [encodePolicy('value', amountWei), encodePolicy('usage', 1n)]
-        }],
-        permitERC4337Paymaster: true
-    };
-};
-
-// FIX: Simplified Packing for Safe 7579 Adapter
-// [Validator Address (32 bytes)] + [Inner Signature]
-const packSafe7579Signature = (validator: Address, signature: Hex): Hex => {
-    const validatorPadded = pad(validator, { size: 32 });
-    return encodePacked(['bytes32', 'bytes'], [validatorPadded, signature]);
-};
-
 // --- CUSTOM CLIENT IMPLEMENTATION ---
 
 export async function getSafe7579SessionAccount(
-    client: PublicClient<any, any>, // Use <any, any> to avoid strict transaction type mismatch
+    client: PublicClient<any, any>,
     safeAddress: Address,
     session: any,
     signUserOp: (hash: Hex) => Promise<Hex>
@@ -93,8 +49,9 @@ export async function getSafe7579SessionAccount(
 
     const permissionId = getPermissionId(session);
 
-    // Helper to wrap signature in 7579 Smart Session format
-    // Mode 0x00 = USE
+    // Mode 0x00 = USE session.
+    // Format: [Mode (1 byte)] + [PermissionId (32 bytes)] + [Signature]
+    // The Safe Adapter reads the validator from the Nonce, so we don't need to wrap this further.
     const encodeSmartSessionSig = (sig: Hex) => encodePacked(['bytes1', 'bytes32', 'bytes'], ['0x00', permissionId, sig]);
 
     return toSmartAccount({
@@ -109,7 +66,8 @@ export async function getSafe7579SessionAccount(
             return safeAddress;
         },
 
-        // Override Nonce: Use Validator Address as Key (2D Nonce)
+        // Override Nonce: Key includes the Validator Address.
+        // This tells the Safe 7579 Adapter which module to validate against.
         async getNonce() {
             const key = concat([
                 SMART_SESSIONS_VALIDATOR_ADDRESS as Address,
@@ -123,10 +81,14 @@ export async function getSafe7579SessionAccount(
             });
         },
 
-        // Override EncodeCalls: Use ERC-7579 `execute`
         async encodeCalls(calls) {
             const call = calls[0];
             const mode = "0x0000000000000000000000000000000000000000000000000000000000000000"; // Single Call
+
+            // Ensure call.to is defined, otherwise throw or handle it. 
+            // In a session execution, 'to' MUST be the target.
+            if (!call.to) throw new Error("Missing 'to' in call");
+
             const calldata = encodePacked(['address', 'uint256', 'bytes'], [call.to, call.value || 0n, call.data || "0x"]);
 
             return encodeFunctionData({
@@ -136,7 +98,6 @@ export async function getSafe7579SessionAccount(
             });
         },
 
-        // Override SignUserOperation
         async signUserOperation(userOp) {
             const { chainId = client.chain!.id, ...op } = userOp;
             const hash = getUserOperationHash({
@@ -151,31 +112,22 @@ export async function getSafe7579SessionAccount(
             });
 
             const signature = await signUserOp(hash);
-            const smartSessionSig = encodeSmartSessionSig(signature);
-
-            // FIX: Wrap with simple Safe Adapter format
-            return packSafe7579Signature(SMART_SESSIONS_VALIDATOR_ADDRESS, smartSessionSig);
+            return encodeSmartSessionSig(signature);
         },
 
-        // Override StubSignature
         async getStubSignature() {
-            const dummySig = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff1c" as Hex;
-            const smartSessionSig = encodeSmartSessionSig(dummySig);
-            return packSafe7579Signature(SMART_SESSIONS_VALIDATOR_ADDRESS, smartSessionSig);
+            // FIX: Use a mathematically valid ECDSA signature for the stub.
+            // All 0xff causes ecrecover to revert/fail hard in some validators.
+            // r = 1, s = 1, v = 27 (0x1b)
+            const dummySig = "0x000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000011b" as Hex;
+            return encodeSmartSessionSig(dummySig);
         },
-
-        // --- Implement Missing Required Methods ---
 
         async getFactoryArgs() {
             return { factory: undefined, factoryData: undefined };
         },
 
-        async signMessage({ message }) {
-            throw new Error("signMessage not implemented for Session Key Client");
-        },
-
-        async signTypedData(typedData) {
-            throw new Error("signTypedData not implemented for Session Key Client");
-        }
+        async signMessage() { throw new Error("Not implemented"); },
+        async signTypedData() { throw new Error("Not implemented"); }
     });
 }
