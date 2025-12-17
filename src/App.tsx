@@ -10,7 +10,9 @@ import {
   parseEther,
   formatEther,
   formatUnits,
-  concat
+  concat,
+  type Address,
+  toHex
 } from "viem";
 import { baseSepolia } from "viem/chains";
 import { entryPoint07Address } from "viem/account-abstraction";
@@ -21,6 +23,27 @@ import Safe from "@safe-global/protocol-kit";
 
 import { connectPhantom } from "./utils/phantom";
 import "./App.css";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { createSessionStruct } from "./utils/smartSessions";
+import { getPermissionId, getSafe7579SessionAccount } from "./utils/safe7579";
+
+// --- LOGGING HELPER ---
+const consoleLog = (stage: string, message: string, data?: any) => {
+  const labelStyle = "background: #4f46e5; color: #fff; padding: 2px 6px; border-radius: 4px; font-weight: bold;";
+  const msgStyle = "font-weight: bold; color: #4f46e5;";
+
+  console.groupCollapsed(`%c${stage}%c ${message}`, labelStyle, msgStyle);
+  if (data) {
+    console.log(
+      JSON.stringify(
+        data,
+        (_, v) => (typeof v === "bigint" ? v.toString() + "n" : v),
+        2
+      )
+    );
+  }
+  console.groupEnd();
+};
 
 // --- CONFIG ---
 const PIMLICO_API_KEY = import.meta.env.VITE_PIMLICO_API_KEY;
@@ -60,9 +83,20 @@ const ADAPTER_7579_ABI = parseAbi([
 
 const ERC20_ABI = parseAbi(["function balanceOf(address owner) view returns (uint256)"]);
 
+// --- SMART SESSION CONFIG ---
+const ENABLE_SESSIONS_ABI = parseAbi([
+  "struct PolicyData { address policy; bytes initData; }",
+  "struct ERC7739Context { bytes32 appDomainSeparator; string[] contentName; }",
+  "struct ERC7739Data { ERC7739Context[] allowedERC7739Content; PolicyData[] erc1271Policies; }",
+  "struct ActionData { bytes4 actionTargetSelector; address actionTarget; PolicyData[] actionPolicies; }",
+  "struct Session { address sessionValidator; bytes sessionValidatorInitData; bytes32 salt; PolicyData[] userOpPolicies; ERC7739Data erc7739Policies; ActionData[] actions; bool permitERC4337Paymaster; }",
+  "function enableSessions(Session[] calldata sessions) external returns (bytes32[])",
+  "function isPermissionEnabled(bytes32 permissionId, address account) external view returns (bool)"
+]);
+
 // --- ICONS ---
 const Icons = {
-  Wallet: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-9" /><path d="M14 17H5" /><circle cx="17" cy="17" r="3" /><path d="M7 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3" /></svg>,
+  Wallet: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-9" /><path d="M14 17H5" /><circle cx="17" cy="17" r="3" /><path d="M7 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2h3a2 2 0 0 1 2 2v2h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3" /></svg>,
   Safe: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>,
   Nested: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>,
   Check: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" /></svg>,
@@ -188,7 +222,7 @@ const App: React.FC = () => {
   const [selectedSafeAddr, setSelectedSafeAddr] = useState<string>("");
   const [selectedNestedSafeAddr, setSelectedNestedSafeAddr] = useState<string>("");
 
-  const [activeTab, setActiveTab] = useState<'transfer' | 'owners' | 'queue' | 'history' | 'settings'>('transfer');
+  const [activeTab, setActiveTab] = useState<'transfer' | 'scheduled' | 'owners' | 'queue' | 'history' | 'settings'>('transfer');
 
   // Data State
   const [nestedOwners, setNestedOwners] = useState<string[]>([]);
@@ -219,6 +253,14 @@ const App: React.FC = () => {
   const [sendAmount, setSendAmount] = useState("");
   const [newOwnerInput, setNewOwnerInput] = useState("");
   const [newThresholdInput, setNewThresholdInput] = useState<number>(1);
+
+  // Scheduled Transfer State
+  const [scheduleRecipient, setScheduleRecipient] = useState("");
+  const [scheduleAmount, setScheduleAmount] = useState("");
+  const [hasStoredSchedule, setHasStoredSchedule] = useState(false);
+  const [scheduledInfo, setScheduledInfo] = useState<{ target: string, amount: string } | null>(null);
+  // NEW: Track on-chain session status
+  const [isSessionEnabledOnChain, setIsSessionEnabledOnChain] = useState(false);
 
   // --- INITIALIZATION ---
 
@@ -255,6 +297,20 @@ const App: React.FC = () => {
       queueRef.current = parsedQueue; // Sync Ref
     }
   }, []);
+
+  // Check for existing schedule on load
+  useEffect(() => {
+    const stored = localStorage.getItem("scheduled_session");
+    if (stored) {
+      const data = JSON.parse(stored);
+      setHasStoredSchedule(true);
+      setScheduledInfo({ target: data.target, amount: data.amount });
+      // Check on-chain status immediately
+      if (data.permissionId && selectedNestedSafeAddr) {
+        checkSessionStatus(selectedNestedSafeAddr, data.permissionId);
+      }
+    }
+  }, [selectedNestedSafeAddr]);
 
   useEffect(() => {
     if (activeTab === 'history' && selectedNestedSafeAddr) {
@@ -298,6 +354,23 @@ const App: React.FC = () => {
   };
 
   // --- ACTIONS ---
+
+  const checkSessionStatus = async (account: string, permissionId: string) => {
+    try {
+      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const isEnabled = await publicClient.readContract({
+        address: SMART_SESSIONS_VALIDATOR_ADDRESS,
+        abi: ENABLE_SESSIONS_ABI,
+        functionName: "isPermissionEnabled",
+        args: [permissionId as Hex, account as Address]
+      });
+      setIsSessionEnabledOnChain(isEnabled);
+      if (isEnabled) consoleLog("SESSION-CHECK", "Session is Enabled on-chain");
+      else consoleLog("SESSION-CHECK", "Session NOT enabled yet");
+    } catch (e) {
+      console.error("Failed to check session status", e);
+    }
+  };
 
   const createParentSafe = async () => {
     const client = await getClient();
@@ -398,14 +471,13 @@ const App: React.FC = () => {
       const handlerAddress = fallbackHandler ? `0x${fallbackHandler.slice(-40)}` : "0x";
       setCurrentFallbackHandler(handlerAddress);
 
-      // Attempt to check if validator is installed. 
-      // Since 'isModuleInstalled' on the adapter requires msg.sender to be the Safe,
-      // we can't accurately query this via simple readContract from the frontend without simulation.
-      // However, if we assume the user followed the steps, we can optimistically set this if the Adapter is enabled & fallback is set.
-      // For a robust app, we would use a read-only call simulation with state overrides.
-      if (isEnabled && handlerAddress.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase()) {
-        // Logic to determine if "Step 3" was executed. For now, rely on session/local state or user flow.
-        // setIsValidatorInstalled(true); // Can't definitively check on-chain easily
+      // Check session status if we have a stored schedule
+      const stored = localStorage.getItem("scheduled_session");
+      if (stored) {
+        const data = JSON.parse(stored);
+        if (data.permissionId) {
+          checkSessionStatus(address, data.permissionId);
+        }
       }
 
     } catch { }
@@ -431,6 +503,171 @@ const App: React.FC = () => {
     addLog("Refreshing Queue & Nonce...", "info");
     await fetchData(selectedNestedSafeAddr);
     await checkQueueApprovals();
+  };
+
+  const handleCreateSchedule = async () => {
+    if (!scheduleRecipient || !scheduleAmount) return;
+    setLoading(true);
+
+    try {
+      consoleLog("SESSION-CREATE", "Initiating Schedule Creation", {
+        recipient: scheduleRecipient,
+        amount: scheduleAmount
+      });
+
+      const amountWei = parseEther(scheduleAmount);
+      const privateKey = generatePrivateKey();
+      const sessionOwner = privateKeyToAccount(privateKey);
+
+      consoleLog("SESSION-CREATE", "Generated Ephemeral Session Key", {
+        address: sessionOwner.address,
+        privateKey: privateKey.slice(0, 10) + "..." // Log partial key for debug context
+      });
+
+      const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
+
+      const session = createSessionStruct(
+        sessionOwner.address,
+        scheduleRecipient as Address,
+        amountWei,
+        salt
+      );
+
+      consoleLog("SESSION-CREATE", "Built Session Structure", session);
+
+      const expectedId = getPermissionId(session);
+      consoleLog("SESSION-CREATE", "Calculated Permission ID", expectedId);
+
+      const enableData = encodeFunctionData({
+        abi: ENABLE_SESSIONS_ABI,
+        functionName: "enableSessions",
+        args: [[session]]
+      });
+
+      consoleLog("SESSION-CREATE", "Constructed Enable Call Data", enableData);
+
+      // We call the validator via the Safe 7579 Adapter (Fallback Handler)
+      // BUT for enablement, we call the module directly via the Safe
+      // Actually, standard is to call `enableSessions` on the module.
+      // But Safe needs to execute it.
+      await proposeTransaction(
+        SMART_SESSIONS_VALIDATOR_ADDRESS,
+        0n,
+        enableData,
+        `Enable Session: ${expectedId.slice(0, 10)}...`,
+        0,
+        0
+      );
+
+      localStorage.setItem("scheduled_session", JSON.stringify({
+        privateKey,
+        session,
+        target: scheduleRecipient,
+        amount: scheduleAmount,
+        permissionId: expectedId
+      }));
+
+      setHasStoredSchedule(true);
+      setScheduledInfo({ target: scheduleRecipient, amount: scheduleAmount });
+      setIsSessionEnabledOnChain(false); // Assume false until executed
+      setScheduleRecipient("");
+      setScheduleAmount("");
+
+      addLog(`Session Proposed! Please EXECUTE it in Queue before using it.`, "info");
+      setActiveTab('queue');
+
+    } catch (e: any) {
+      addLog(`Schedule Creation Failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleExecuteSchedule = async () => {
+    const stored = localStorage.getItem("scheduled_session");
+    if (!stored) return;
+
+    setLoading(true);
+    try {
+      const { privateKey, session, target, amount, permissionId: storedId } = JSON.parse(stored);
+
+      consoleLog("SESSION-EXEC", "Retrieved Session from Storage", {
+        storedId,
+        target,
+        amount
+      });
+
+      const sessionOwner = privateKeyToAccount(privateKey);
+      const currentId = getPermissionId(session);
+
+      consoleLog("SESSION-EXEC", "Verifying Permission ID", {
+        stored: storedId,
+        calculated: currentId,
+        match: storedId === currentId
+      });
+
+      if (storedId && currentId !== storedId) {
+        throw new Error("Session ID mismatch. Please clear schedule and try again.");
+      }
+
+      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
+
+      const safeAccount = await getSafe7579SessionAccount(
+        publicClient,
+        selectedNestedSafeAddr as Hex,
+        session,
+        // FIX: Use .sign({ hash }) to sign the raw UserOp hash without "Ethereum Signed Message" prefix.
+        // The OwnableValidator expects a raw signature over the UserOp hash.
+        async (hash) => (sessionOwner as any).sign({ hash }) 
+      );
+
+      consoleLog("SESSION-EXEC", "Initialized Safe7579 Account", {
+        address: safeAccount.address,
+        validator: SMART_SESSIONS_VALIDATOR_ADDRESS
+      });
+
+      const smartClient = createSmartAccountClient({
+        account: safeAccount,
+        chain: baseSepolia,
+        bundlerTransport: http(PIMLICO_URL),
+        paymaster: pimlicoClient,
+        userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
+      });
+
+      addLog("Executing via Smart Session...", "info");
+
+      // FIX: Use "0x" for native ETH transfers.
+      // This matches the "0xFFFFFFFF" selector in the permission.
+      const executionPayload = {
+        to: target,
+        value: parseEther(amount),
+        data: "0x" as Hex
+      };
+
+      consoleLog("SESSION-EXEC", "Sending UserOp (Execution)", executionPayload);
+
+      const hash = await smartClient.sendTransaction(executionPayload);
+
+      consoleLog("SESSION-EXEC", "Execution Result", { hash });
+
+      addLog(`Schedule Executed! TX: ${hash}`, "success");
+      handleClearSchedule();
+
+    } catch (e: any) {
+      addLog(`Execution Failed: ${e.message}`, "error");
+      if (e.message.includes("AA23")) addLog("Hint: Ensure the Enable Session transaction was executed on-chain.", "info");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleClearSchedule = () => {
+    localStorage.removeItem("scheduled_session");
+    setHasStoredSchedule(false);
+    setScheduledInfo(null);
+    setIsSessionEnabledOnChain(false);
+    addLog("Local schedule data cleared", "info");
   };
 
   // --- MULTI-SIG LOGIC ---
@@ -537,11 +774,6 @@ const App: React.FC = () => {
       }
 
       // 3. Initialize Adapter & Install Validator via CALL (Op 0)
-      // CRITICAL: Use Call (Op 0) to Adapter. Append SAFE ADDRESS to emulate 2771 msg.sender.
-
-      // Only propose this if previous steps are done (or if we are chaining them now).
-      // Since we check the bools above, we only propose Step 3 if we are proposing steps 1 & 2 or if they are done.
-
       if (walletClient?.account) {
         // Build the init call data
         const initData = encodeFunctionData({
@@ -561,21 +793,18 @@ const App: React.FC = () => {
           ]
         });
 
-        // Append SAFE address (20 bytes) to the calldata
-        // This satisfies `onlyEntryPointOrSelf` in the Adapter, as `_msgSender()` will read the appended address.
         const paddedAddress = selectedNestedSafeAddr.slice(2);
         const dataWithContext = concat([initData, `0x${paddedAddress}` as Hex]);
 
         await proposeTransaction(
           SAFE_7579_ADAPTER_ADDRESS, // Call the Adapter Directly
           0n,
-          dataWithContext, // Use payload with appended SAFE ADDRESS
+          dataWithContext, 
           "3. Init Adapter & Install Validator",
           offset,
           0 // Call (Operation 0)
         );
 
-        // Assume success locally for UI update after execution
         setIsValidatorInstalled(true);
       } else {
         addLog("Error: Wallet not connected.", "error");
@@ -860,6 +1089,7 @@ const App: React.FC = () => {
           <div className="main-panel">
             <div className="panel-header">
               <button className={`tab-btn ${activeTab === 'transfer' ? 'active' : ''}`} onClick={() => setActiveTab('transfer')}>Transfer</button>
+              <button className={`tab-btn ${activeTab === 'scheduled' ? 'active' : ''}`} onClick={() => setActiveTab('scheduled')}>Scheduled</button>
               <button className={`tab-btn ${activeTab === 'owners' ? 'active' : ''}`} onClick={() => setActiveTab('owners')}>Owners</button>
               <button className={`tab-btn ${activeTab === 'queue' ? 'active' : ''}`} onClick={() => setActiveTab('queue')}>
                 Queue {currentSafeQueue.filter(t => t.nonce >= nestedNonce).length > 0 && <span className="header-badge" style={{ background: 'var(--primary)', border: 'none', marginLeft: '6px' }}>{currentSafeQueue.filter(t => t.nonce >= nestedNonce).length}</span>}
@@ -889,6 +1119,67 @@ const App: React.FC = () => {
                     {nestedThreshold > 1 ? `Create Proposal (${nestedThreshold} sigs needed)` : "Execute Transaction"}
                   </button>
                 </>
+              )}
+
+              {activeTab === 'scheduled' && (
+                <div>
+                  <div className="section-label">Scheduled Transfer (Smart Session)</div>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
+                    Create a permissioned session key that can execute a specific transfer later without requiring owner signatures.
+                  </p>
+
+                  {!hasStoredSchedule ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                      <div className="input-group">
+                        <label>Recipient Address</label>
+                        <input placeholder="0x..." value={scheduleRecipient} onChange={e => setScheduleRecipient(e.target.value)} />
+                      </div>
+                      <div className="input-group">
+                        <label>Amount (ETH)</label>
+                        <input type="number" placeholder="0.0" value={scheduleAmount} onChange={e => setScheduleAmount(e.target.value)} />
+                      </div>
+                      <button className="action-btn" onClick={handleCreateSchedule} disabled={loading || !isCurrentSafeOwner}>
+                        Create Schedule Proposal
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ background: 'var(--surface-1)', padding: '1.5rem', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '1rem' }}>
+                        <div style={{ color: 'var(--success)' }}><Icons.Check /></div>
+                        <h3 style={{ margin: 0, fontSize: '1rem' }}>Transfer Ready</h3>
+                      </div>
+                      <div style={{ fontSize: '0.9rem', marginBottom: '1rem' }}>
+                        <div><strong>Target:</strong> {scheduledInfo?.target}</div>
+                        <div><strong>Amount:</strong> {scheduledInfo?.amount} ETH</div>
+                        <div style={{ color: 'var(--text-secondary)', marginTop: '5px' }}>Key is stored locally. This action does not require owner signatures, only the Session Key.</div>
+                        <div style={{ marginTop: '10px', color: isSessionEnabledOnChain ? 'var(--success)' : '#fbbf24', fontWeight: '600' }}>
+                          Status: {isSessionEnabledOnChain ? "Active & Ready" : "Pending Execution on Safe"}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button className="action-btn" onClick={handleExecuteSchedule} disabled={loading || !isSessionEnabledOnChain}>
+                          Execute Now
+                        </button>
+                        {!isSessionEnabledOnChain && (
+                          <button className="action-btn secondary" onClick={() => {
+                            fetchData(selectedNestedSafeAddr); // Refreshes session check
+                          }} disabled={loading}>
+                            Check Status
+                          </button>
+                        )}
+                        <button className="action-btn secondary" onClick={handleClearSchedule} disabled={loading}>
+                          Clear / Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Helper hint about Module installation */}
+                  <div style={{ marginTop: '2rem', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    Note: Executing the schedule requires the <strong>Smart Sessions</strong> module to be installed and enabled on your Safe (Settings &gt; Install). The "Create Schedule" button will propose a transaction to Enable the specific session.
+                  </div>
+                </div>
               )}
 
               {activeTab === 'queue' && (
