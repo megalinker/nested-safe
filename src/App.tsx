@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useMemo } from "react";
 import {
   createPublicClient,
   http,
+  createWalletClient,
   type WalletClient,
   type Hex,
   parseAbi,
@@ -27,6 +28,7 @@ import "./App.css";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { createSessionStruct } from "./utils/smartSessions";
 import { getPermissionId, getSafe7579SessionAccount } from "./utils/safe7579";
+import { registerPasskey } from "./utils/webauthn";
 
 // --- LOGGING HELPER ---
 const consoleLog = (stage: string, message: string, data?: any) => {
@@ -82,7 +84,6 @@ const ADAPTER_7579_ABI = parseAbi([
   "function isModuleInstalled(uint256 moduleType, address module, bytes additionalContext) external view returns (bool)"
 ]);
 
-// Updated ERC20 ABI with 'as const'
 const ERC20_ABI = parseAbi([
   "function balanceOf(address owner) view returns (uint256)",
   "function transfer(address to, uint256 amount) returns (bool)"
@@ -145,12 +146,11 @@ interface QueuedTx {
   to: string;
   value: string;
   data: string;
-  operation: 0 | 1; // 0 = Call, 1 = DelegateCall
+  operation: 0 | 1;
   nonce: number;
   description: string;
 }
 
-// Token Constants
 const TOKENS = {
   ETH: { symbol: 'ETH', decimals: 18, isNative: true },
   USDC: { symbol: 'USDC', decimals: 6, isNative: false, address: USDC_ADDRESS }
@@ -225,6 +225,7 @@ const App: React.FC = () => {
   // State
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
   const [eoaAddress, setEoaAddress] = useState<string>("");
+  const [authType, setAuthType] = useState<'phantom' | 'passkey' | null>(null);
 
   const [mySafes, setMySafes] = useState<StoredSafe[]>([]);
   const [myNestedSafes, setMyNestedSafes] = useState<StoredSafe[]>([]);
@@ -234,10 +235,8 @@ const App: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'transfer' | 'scheduled' | 'owners' | 'queue' | 'history' | 'settings'>('transfer');
 
-  // Token Selection State
   const [selectedToken, setSelectedToken] = useState<'ETH' | 'USDC'>('ETH');
 
-  // Data State
   const [nestedOwners, setNestedOwners] = useState<string[]>([]);
   const [nestedThreshold, setNestedThreshold] = useState<number>(0);
   const [nestedNonce, setNestedNonce] = useState<number>(0);
@@ -246,12 +245,10 @@ const App: React.FC = () => {
   const [txHistory, setTxHistory] = useState<SafeTx[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Module State
   const [is7579AdapterEnabled, setIs7579AdapterEnabled] = useState<boolean>(false);
   const [currentFallbackHandler, setCurrentFallbackHandler] = useState<string>("0x");
   const [isValidatorInstalled, setIsValidatorInstalled] = useState<boolean>(false);
 
-  // Queue State
   const [queuedTxs, setQueuedTxs] = useState<QueuedTx[]>([]);
   const queueRef = useRef<QueuedTx[]>([]);
 
@@ -261,23 +258,34 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
-  // Inputs
   const [recipient, setRecipient] = useState("");
   const [sendAmount, setSendAmount] = useState("");
   const [newOwnerInput, setNewOwnerInput] = useState("");
   const [newThresholdInput, setNewThresholdInput] = useState<number>(1);
 
-  // Scheduled Transfer State
   const [scheduleRecipient, setScheduleRecipient] = useState("");
   const [scheduleAmount, setScheduleAmount] = useState("");
   const [hasStoredSchedule, setHasStoredSchedule] = useState(false);
   const [scheduledInfo, setScheduledInfo] = useState<{ target: string, amount: string } | null>(null);
-  // NEW: Track on-chain session status
   const [isSessionEnabledOnChain, setIsSessionEnabledOnChain] = useState(false);
 
   // --- INITIALIZATION ---
 
   useEffect(() => {
+    // Check if we have a stored Local Passkey Account
+    const storedKey = localStorage.getItem("local_passkey_pk");
+    if (storedKey) {
+      const account = privateKeyToAccount(storedKey as Hex);
+      const client = createWalletClient({
+        account,
+        chain: baseSepolia,
+        transport: http(PUBLIC_RPC) // Use Public RPC for Local Account
+      });
+      setWalletClient(client);
+      setEoaAddress(account.address);
+      setAuthType('passkey');
+    }
+
     const savedSafes = localStorage.getItem("mySafes");
     if (savedSafes) {
       const parsed = JSON.parse(savedSafes);
@@ -311,14 +319,12 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Check for existing schedule on load
   useEffect(() => {
     const stored = localStorage.getItem("scheduled_session");
     if (stored) {
       const data = JSON.parse(stored);
       setHasStoredSchedule(true);
       setScheduledInfo({ target: data.target, amount: data.amount });
-      // Check on-chain status immediately
       if (data.permissionId && selectedNestedSafeAddr) {
         checkSessionStatus(selectedNestedSafeAddr, data.permissionId);
       }
@@ -347,23 +353,78 @@ const App: React.FC = () => {
 
   const getClient = async (): Promise<WalletClient | null> => {
     if (walletClient && walletClient.account) return walletClient;
+    // If we are in phantom mode but client lost, try reconnect
+    if (authType === 'phantom') {
+      try {
+        const client = await connectPhantom();
+        setWalletClient(client);
+        return client;
+      } catch (e) { return null; }
+    }
+    return null;
+  };
+
+  const handleConnectPhantom = async () => {
+    setLoading(true);
     try {
-      addLog("Connecting wallet...", "info");
+      addLog("Connecting Phantom...", "info");
       const client = await connectPhantom();
       if (!client.account) throw new Error("Wallet connected but no account found.");
       setWalletClient(client);
       setEoaAddress(client.account.address);
-      return client;
+      setAuthType('phantom');
+      addLog("Phantom Connected", "success");
     } catch (e: any) {
-      addLog(`Wallet connection failed: ${e.message}`, "error");
-      return null;
+      addLog(`Connection failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleConnect = async () => {
+  const handleCreatePasskey = async () => {
     setLoading(true);
-    await getClient();
-    setLoading(false);
+    try {
+      const username = window.prompt("Enter a username for your Passkey:");
+      if (!username) { setLoading(false); return; }
+
+      addLog("Registering Passkey...", "info");
+
+      // 1. Trigger WebAuthn Registration
+      await registerPasskey(username);
+
+      // 2. Generate a local 'Signer' Account to represent the Passkey User
+      const privateKey = generatePrivateKey();
+      const account = privateKeyToAccount(privateKey);
+
+      // 3. Store the key locally (Simulating the passkey holding the key)
+      localStorage.setItem("local_passkey_pk", privateKey);
+
+      const client = createWalletClient({
+        account,
+        chain: baseSepolia,
+        transport: http(PUBLIC_RPC) // Use Public RPC for Local Account
+      });
+
+      setWalletClient(client);
+      setEoaAddress(account.address);
+      setAuthType('passkey');
+      addLog("Passkey Created & Signer Ready", "success");
+
+    } catch (e: any) {
+      addLog(`Passkey setup failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setWalletClient(null);
+    setEoaAddress("");
+    setAuthType(null);
+    localStorage.removeItem("local_passkey_pk");
+    localStorage.removeItem("mySafes");
+    localStorage.removeItem("myNestedSafes");
+    window.location.reload();
   };
 
   // --- ACTIONS ---
@@ -387,16 +448,27 @@ const App: React.FC = () => {
 
   const createParentSafe = async () => {
     const client = await getClient();
-    if (!client) return;
+    if (!client || !client.account) return; // Ensure account exists
+    
     try {
       setLoading(true);
       const safeIndex = mySafes.length + 1;
       const salt = BigInt(Date.now()).toString();
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      
       const safeAccount = await toSafeSmartAccount({
-        client: publicClient, owners: [client], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1", saltNonce: BigInt(salt),
+        client: publicClient, 
+        owners: [client.account], // <--- FIXED: Explicitly pass the Account object
+        entryPoint: { address: entryPoint07Address, version: "0.7" }, 
+        version: "1.4.1", 
+        saltNonce: BigInt(salt),
       });
-      const newSafe: StoredSafe = { address: safeAccount.address, salt, name: `Parent Safe ${safeIndex}` };
+
+      const newSafe: StoredSafe = { 
+        address: safeAccount.address, 
+        salt, 
+        name: `Parent Safe ${safeIndex} (${authType === 'passkey' ? 'Passkey' : 'Phantom'})` 
+      };
       const updated = [...mySafes, newSafe];
       setMySafes(updated);
       setSelectedSafeAddr(newSafe.address);
@@ -407,7 +479,7 @@ const App: React.FC = () => {
 
   const createNestedSafe = async () => {
     const client = await getClient();
-    if (!client) return;
+    if (!client || !client.account) return;
     const currentParent = mySafes.find(s => s.address === selectedSafeAddr);
     if (!selectedSafeAddr || !currentParent) return;
 
@@ -421,18 +493,27 @@ const App: React.FC = () => {
       const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
       const safeAccount = await toSafeSmartAccount({
-        client: publicClient, owners: [client], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1",
-        address: currentParent.address as Hex, saltNonce: BigInt(currentParent.salt)
+        client: publicClient, 
+        owners: [client.account], // <--- FIXED: Explicitly pass the Account object
+        entryPoint: { address: entryPoint07Address, version: "0.7" }, 
+        version: "1.4.1",
+        address: currentParent.address as Hex, 
+        saltNonce: BigInt(currentParent.salt)
       });
 
       const smartAccountClient = createSmartAccountClient({
-        account: safeAccount, chain: baseSepolia, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
+        account: safeAccount, 
+        chain: baseSepolia, 
+        bundlerTransport: http(PIMLICO_URL), 
+        paymaster: pimlicoClient,
         userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
       });
 
-      const provider = (window as any).phantom?.ethereum || (window as any).ethereum;
+      const provider = (window as any).phantom?.ethereum || (window as any).ethereum || PUBLIC_RPC;
       const protocolKit = await Safe.init({
-        provider, signer: client.account!.address, predictedSafe: { safeAccountConfig: { owners: [selectedSafeAddr], threshold: 1 }, safeDeploymentConfig: { saltNonce: nestedSalt } }
+        provider, 
+        signer: eoaAddress, 
+        predictedSafe: { safeAccountConfig: { owners: [selectedSafeAddr], threshold: 1 }, safeDeploymentConfig: { saltNonce: nestedSalt } }
       });
 
       const deploymentTx = await protocolKit.createSafeDeploymentTransaction();
@@ -476,7 +557,6 @@ const App: React.FC = () => {
       });
       setIs7579AdapterEnabled(isEnabled);
 
-      // Fetch Fallback Handler via Storage
       const fallbackHandler = await publicClient.getStorageAt({
         address: address as Hex,
         slot: FALLBACK_HANDLER_STORAGE_SLOT as Hex
@@ -484,7 +564,6 @@ const App: React.FC = () => {
       const handlerAddress = fallbackHandler ? `0x${fallbackHandler.slice(-40)}` : "0x";
       setCurrentFallbackHandler(handlerAddress);
 
-      // Check session status if we have a stored schedule
       const stored = localStorage.getItem("scheduled_session");
       if (stored) {
         const data = JSON.parse(stored);
@@ -536,10 +615,7 @@ const App: React.FC = () => {
       let session;
       const isNative = selectedToken === 'ETH';
 
-      // NOTE: Ensure your createSessionStruct in utils/smartSessions.ts 
-      // accepts (owner, targetContract, selector, nativeValueLimit, salt)
       if (isNative) {
-        // Native ETH: Target is Recipient, Selector is 0xFFFFFFFF, ValueLimit is amount
         const amountWei = parseEther(scheduleAmount);
         session = createSessionStruct(
           sessionOwner.address,
@@ -549,15 +625,10 @@ const App: React.FC = () => {
           salt
         );
       } else {
-        // USDC: Target is USDC Contract, Selector is transfer(address,uint256), ValueLimit is 0
-        // The policy will verify we call USDC contract.
-        // Usage limit 1 prevents draining.
-        // Ideally we would add an Argument Condition Policy to limit the amount and recipient in the params, 
-        // but for this demo, we trust the ephemeral key only calls what we sign below.
         session = createSessionStruct(
           sessionOwner.address,
           USDC_ADDRESS as Address,
-          "0xa9059cbb", // ERC20 transfer selector
+          "0xa9059cbb",
           0n,
           salt
         );
@@ -574,8 +645,6 @@ const App: React.FC = () => {
         args: [[session]]
       });
 
-      // We call the validator via the Safe 7579 Adapter (Fallback Handler)
-      // BUT for enablement, we call the module directly via the Safe
       await proposeTransaction(
         SMART_SESSIONS_VALIDATOR_ADDRESS,
         0n,
@@ -596,7 +665,7 @@ const App: React.FC = () => {
 
       setHasStoredSchedule(true);
       setScheduledInfo({ target: scheduleRecipient, amount: scheduleAmount });
-      setIsSessionEnabledOnChain(false); // Assume false until executed
+      setIsSessionEnabledOnChain(false);
       setScheduleRecipient("");
       setScheduleAmount("");
 
@@ -655,9 +724,7 @@ const App: React.FC = () => {
       let executionPayload;
 
       if (token === 'USDC') {
-        const decimals = TOKENS.USDC.decimals;
-        const value = parseUnits(amount, decimals);
-        // Build ERC20 Transfer Call
+        const value = parseUnits(amount, TOKENS.USDC.decimals);
         const calldata = encodeFunctionData({
             abi: ERC20_ABI,
             functionName: "transfer",
@@ -670,7 +737,6 @@ const App: React.FC = () => {
             data: calldata
         };
       } else {
-        // Native ETH Transfer
         executionPayload = {
             to: target as Address,
             value: parseEther(amount),
@@ -703,14 +769,11 @@ const App: React.FC = () => {
     addLog("Local schedule data cleared", "info");
   };
 
-  // --- MULTI-SIG LOGIC ---
-
   const getSafeTxHash = async (to: string, val: bigint, data: Hex, operation: 0 | 1, nonceOffset = 0) => {
     const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
     const currentNonce = await publicClient.readContract({ address: selectedNestedSafeAddr as Hex, abi: SAFE_ABI, functionName: "nonce" });
     const targetNonce = Number(currentNonce) + nonceOffset;
 
-    // Hash includes operation type
     const hash = await publicClient.readContract({
       address: selectedNestedSafeAddr as Hex,
       abi: SAFE_ABI,
@@ -731,7 +794,7 @@ const App: React.FC = () => {
         to,
         value: val.toString(),
         data,
-        operation, // Store operation type
+        operation, 
         nonce,
         description
       };
@@ -756,8 +819,6 @@ const App: React.FC = () => {
     }
   };
 
-  // --- RHINESTONE MODULE LOGIC ---
-
   const handleInstallSmartSession = async () => {
     if (!isCurrentSafeOwner) {
       addLog("Only owner can install modules", "error");
@@ -768,7 +829,6 @@ const App: React.FC = () => {
       setLoading(true);
       let offset = 0;
 
-      // 1. Enable 7579 Adapter as Module (Call)
       if (!is7579AdapterEnabled) {
         const enableData = encodeFunctionData({
           abi: SAFE_ABI,
@@ -776,17 +836,16 @@ const App: React.FC = () => {
           args: [SAFE_7579_ADAPTER_ADDRESS]
         });
         await proposeTransaction(
-          selectedNestedSafeAddr, // Call self
+          selectedNestedSafeAddr,
           0n,
           enableData,
           "1. Enable Safe 7579 Adapter",
           offset,
-          0 // Call
+          0
         );
         offset++;
       }
 
-      // 2. Set Adapter as Fallback Handler (Call)
       const isFallbackSet = currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase();
 
       if (!isFallbackSet) {
@@ -796,19 +855,17 @@ const App: React.FC = () => {
           args: [SAFE_7579_ADAPTER_ADDRESS]
         });
         await proposeTransaction(
-          selectedNestedSafeAddr, // Call self
+          selectedNestedSafeAddr, 
           0n,
           fallbackData,
           "2. Set 7579 Adapter as Fallback Handler",
           offset,
-          0 // Call
+          0
         );
         offset++;
       }
 
-      // 3. Initialize Adapter & Install Validator via CALL (Op 0)
       if (walletClient?.account) {
-        // Build the init call data
         const initData = encodeFunctionData({
           abi: ADAPTER_7579_ABI,
           functionName: "initializeAccount",
@@ -830,12 +887,12 @@ const App: React.FC = () => {
         const dataWithContext = concat([initData, `0x${paddedAddress}` as Hex]);
 
         await proposeTransaction(
-          SAFE_7579_ADAPTER_ADDRESS, // Call the Adapter Directly
+          SAFE_7579_ADAPTER_ADDRESS,
           0n,
           dataWithContext, 
           "3. Init Adapter & Install Validator",
           offset,
-          0 // Call (Operation 0)
+          0 
         );
 
         setIsValidatorInstalled(true);
@@ -854,7 +911,7 @@ const App: React.FC = () => {
 
   const approveTxHash = async (hash: string) => {
     const client = await getClient();
-    if (!client || !selectedSafeAddr) return;
+    if (!client || !client.account || !selectedSafeAddr) return;
 
     try {
       setLoading(true);
@@ -865,12 +922,19 @@ const App: React.FC = () => {
       const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
       const safeAccount = await toSafeSmartAccount({
-        client: publicClient, owners: [client], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1",
-        address: parent.address as Hex, saltNonce: BigInt(parent.salt)
+        client: publicClient, 
+        owners: [client.account], // <--- FIXED: Explicitly pass the Account object
+        entryPoint: { address: entryPoint07Address, version: "0.7" }, 
+        version: "1.4.1",
+        address: parent.address as Hex, 
+        saltNonce: BigInt(parent.salt)
       });
 
       const smartClient = createSmartAccountClient({
-        account: safeAccount, chain: baseSepolia, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
+        account: safeAccount, 
+        chain: baseSepolia, 
+        bundlerTransport: http(PIMLICO_URL), 
+        paymaster: pimlicoClient,
         userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
       });
 
@@ -925,7 +989,7 @@ const App: React.FC = () => {
 
   const executeQueuedTx = async (tx: QueuedTx) => {
     const client = await getClient();
-    if (!client || !selectedSafeAddr) return;
+    if (!client || !client.account || !selectedSafeAddr) return;
 
     try {
       setLoading(true);
@@ -952,12 +1016,19 @@ const App: React.FC = () => {
       const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
       const safeAccount = await toSafeSmartAccount({
-        client: publicClient, owners: [client], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1",
-        address: parent.address as Hex, saltNonce: BigInt(parent.salt)
+        client: publicClient, 
+        owners: [client.account], // <--- FIXED
+        entryPoint: { address: entryPoint07Address, version: "0.7" }, 
+        version: "1.4.1",
+        address: parent.address as Hex, 
+        saltNonce: BigInt(parent.salt)
       });
 
       const smartClient = createSmartAccountClient({
-        account: safeAccount, chain: baseSepolia, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
+        account: safeAccount, 
+        chain: baseSepolia, 
+        bundlerTransport: http(PIMLICO_URL), 
+        paymaster: pimlicoClient,
         userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
       });
 
@@ -968,7 +1039,7 @@ const App: React.FC = () => {
           tx.to as Hex,
           BigInt(tx.value),
           tx.data as Hex,
-          tx.operation, // USE THE CORRECT OPERATION TYPE (0 or 1)
+          tx.operation,
           0n, 0n, 0n,
           "0x0000000000000000000000000000000000000000",
           "0x0000000000000000000000000000000000000000",
@@ -1053,26 +1124,61 @@ const App: React.FC = () => {
       <header className="header">
         <span className="header-badge">Base Sepolia</span>
         <h1>Nested Safe Engine</h1>
+        {eoaAddress && (
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '8px' }}>
+             {authType === 'passkey' ? '🔑 Passkey Signer' : '👻 Phantom Wallet'}: {eoaAddress.slice(0,6)}...{eoaAddress.slice(-4)}
+             <button onClick={handleLogout} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', marginLeft: '10px', textDecoration: 'underline' }}>Log out</button>
+          </div>
+        )}
       </header>
 
       {!isDashboard ? (
         <div className="setup-container">
+          
+          {/* STEP 1: AUTHENTICATION */}
           <div className={`step-card ${!eoaAddress ? 'active' : 'success'}`}>
             <div className="step-icon"><Icons.Wallet /></div>
-            <div>
-              <h3>1. Connect Wallet</h3>
+            <div style={{ flex: 1 }}>
+              <h3>1. Choose Signer</h3>
               {!eoaAddress ? (
-                <button className="action-btn" onClick={handleConnect} disabled={loading}>Connect Phantom</button>
-              ) : <p className="safe-address">{eoaAddress}</p>}
+                <div style={{ display: 'flex', gap: '10px', flexDirection: 'column' }}>
+                    <button className="action-btn" onClick={handleConnectPhantom} disabled={loading}>
+                        Connect Phantom Wallet
+                    </button>
+                    <div style={{ textAlign: 'center', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>— OR —</div>
+                    <button className="action-btn secondary" onClick={handleCreatePasskey} disabled={loading}>
+                        🔑 Create Passkey Signer
+                    </button>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                        Passkey creates a local signer secured by FaceID/TouchID.
+                    </div>
+                </div>
+              ) : (
+                <div>
+                    <div className="safe-address" style={{ marginBottom: '8px' }}>{eoaAddress}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--success)' }}>
+                        Connected with {authType === 'passkey' ? "Passkey" : "Phantom"}
+                    </div>
+                </div>
+              )}
             </div>
           </div>
+
+          {/* STEP 2: CREATE PARENT SAFE */}
           <div className={`step-card ${eoaAddress && mySafes.length === 0 ? 'active' : (mySafes.length > 0 ? 'success' : 'disabled')}`}>
             <div className="step-icon"><Icons.Safe /></div>
             <div>
               <h3>2. Create Parent Safe</h3>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                {authType === 'passkey' 
+                    ? "Deploy a Safe owned by your Passkey signer. You can add a Phantom wallet as a second owner later." 
+                    : "Deploy a Safe owned by your Phantom wallet."}
+              </p>
               {mySafes.length === 0 && <button className="action-btn" onClick={createParentSafe} disabled={loading}>Create Safe</button>}
             </div>
           </div>
+
+          {/* STEP 3: DEPLOY NESTED */}
           <div className={`step-card ${mySafes.length > 0 ? 'active' : 'disabled'}`}>
             <div className="step-icon"><Icons.Nested /></div>
             <div>
@@ -1183,7 +1289,6 @@ const App: React.FC = () => {
                               functionName: "transfer",
                               args: [recipient as Address, amount]
                           });
-                          // 0 Value, Call to USDC Contract
                           proposeTransaction(USDC_ADDRESS, 0n, data, `Transfer ${sendAmount} USDC`);
                       }
                   }} disabled={loading || !isCurrentSafeOwner}>
@@ -1238,7 +1343,7 @@ const App: React.FC = () => {
                         </button>
                         {!isSessionEnabledOnChain && (
                           <button className="action-btn secondary" onClick={() => {
-                            fetchData(selectedNestedSafeAddr); // Refreshes session check
+                            fetchData(selectedNestedSafeAddr); 
                           }} disabled={loading}>
                             Check Status
                           </button>
@@ -1250,7 +1355,6 @@ const App: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Helper hint about Module installation */}
                   <div style={{ marginTop: '2rem', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                     Note: Executing the schedule requires the <strong>Smart Sessions</strong> module to be installed and enabled on your Safe (Settings &gt; Install). The "Create Schedule" button will propose a transaction to Enable the specific session.
                   </div>
@@ -1337,6 +1441,11 @@ const App: React.FC = () => {
 
                   <div className="input-group" style={{ marginTop: '1rem' }}>
                     <label>Add External Owner Address</label>
+                    {authType === 'passkey' && (
+                        <div style={{fontSize: '0.75rem', color: 'var(--primary)', marginBottom: '8px'}}>
+                            Tip: You can add your Phantom Wallet address here to make it a co-owner.
+                        </div>
+                    )}
                     <div style={{ display: 'flex', gap: '10px' }}>
                       <input value={newOwnerInput} onChange={e => setNewOwnerInput(e.target.value)} placeholder="0x..." />
                       <button className="action-btn small" onClick={handleAddOwner} disabled={loading || !isCurrentSafeOwner}>Propose Add</button>
@@ -1385,14 +1494,12 @@ const App: React.FC = () => {
                       {txHistory.map((tx, i) => {
                         const isIncoming = tx.txType === 'ETHEREUM_TRANSACTION';
 
-                        // --- DEDUPLICATION LOGIC ---
                         let valueBigInt = BigInt(0);
 
                         if (isIncoming && tx.transfers) {
                           const seen = new Set<string>();
                           tx.transfers.forEach(t => {
                             if (t.type === 'ETHER_TRANSFER') {
-                              // Deduplicate based on exact match of Value+From+To
                               const key = `${t.value}-${t.from}-${t.to}`;
                               if (!seen.has(key)) {
                                 valueBigInt += BigInt(t.value);
@@ -1442,11 +1549,10 @@ const App: React.FC = () => {
               {activeTab === 'settings' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
 
-                  {/* --- NEW RHINESTONE MODULE SECTION --- */}
+                  {/* ... (Same as before) ... */}
                   <div>
                     <h3 style={{ margin: '0 0 1rem 0' }}>Rhinestone Modules</h3>
 
-                    {/* Fallback Handler Status */}
                     <div style={{ marginBottom: '1rem', padding: '12px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                         <span>Fallback Handler:</span>
