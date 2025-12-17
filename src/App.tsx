@@ -10,6 +10,7 @@ import {
   parseEther,
   formatEther,
   formatUnits,
+  parseUnits,
   concat,
   type Address,
   toHex
@@ -81,7 +82,11 @@ const ADAPTER_7579_ABI = parseAbi([
   "function isModuleInstalled(uint256 moduleType, address module, bytes additionalContext) external view returns (bool)"
 ]);
 
-const ERC20_ABI = parseAbi(["function balanceOf(address owner) view returns (uint256)"]);
+// Updated ERC20 ABI with 'as const'
+const ERC20_ABI = parseAbi([
+  "function balanceOf(address owner) view returns (uint256)",
+  "function transfer(address to, uint256 amount) returns (bool)"
+] as const);
 
 // --- SMART SESSION CONFIG ---
 const ENABLE_SESSIONS_ABI = parseAbi([
@@ -110,7 +115,6 @@ const Icons = {
 };
 
 // --- TYPES ---
-
 interface StoredSafe { address: string; salt: string; name: string; }
 interface LogEntry { msg: string; type: 'info' | 'success' | 'error'; timestamp: string; }
 
@@ -145,6 +149,12 @@ interface QueuedTx {
   nonce: number;
   description: string;
 }
+
+// Token Constants
+const TOKENS = {
+  ETH: { symbol: 'ETH', decimals: 18, isNative: true },
+  USDC: { symbol: 'USDC', decimals: 6, isNative: false, address: USDC_ADDRESS }
+};
 
 // --- COMPONENTS ---
 
@@ -223,6 +233,9 @@ const App: React.FC = () => {
   const [selectedNestedSafeAddr, setSelectedNestedSafeAddr] = useState<string>("");
 
   const [activeTab, setActiveTab] = useState<'transfer' | 'scheduled' | 'owners' | 'queue' | 'history' | 'settings'>('transfer');
+
+  // Token Selection State
+  const [selectedToken, setSelectedToken] = useState<'ETH' | 'USDC'>('ETH');
 
   // Data State
   const [nestedOwners, setNestedOwners] = useState<string[]>([]);
@@ -512,26 +525,43 @@ const App: React.FC = () => {
     try {
       consoleLog("SESSION-CREATE", "Initiating Schedule Creation", {
         recipient: scheduleRecipient,
-        amount: scheduleAmount
+        amount: scheduleAmount,
+        token: selectedToken
       });
 
-      const amountWei = parseEther(scheduleAmount);
       const privateKey = generatePrivateKey();
       const sessionOwner = privateKeyToAccount(privateKey);
-
-      consoleLog("SESSION-CREATE", "Generated Ephemeral Session Key", {
-        address: sessionOwner.address,
-        privateKey: privateKey.slice(0, 10) + "..." // Log partial key for debug context
-      });
-
       const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
+      
+      let session;
+      const isNative = selectedToken === 'ETH';
 
-      const session = createSessionStruct(
-        sessionOwner.address,
-        scheduleRecipient as Address,
-        amountWei,
-        salt
-      );
+      // NOTE: Ensure your createSessionStruct in utils/smartSessions.ts 
+      // accepts (owner, targetContract, selector, nativeValueLimit, salt)
+      if (isNative) {
+        // Native ETH: Target is Recipient, Selector is 0xFFFFFFFF, ValueLimit is amount
+        const amountWei = parseEther(scheduleAmount);
+        session = createSessionStruct(
+          sessionOwner.address,
+          scheduleRecipient as Address,
+          "0xFFFFFFFF",
+          amountWei,
+          salt
+        );
+      } else {
+        // USDC: Target is USDC Contract, Selector is transfer(address,uint256), ValueLimit is 0
+        // The policy will verify we call USDC contract.
+        // Usage limit 1 prevents draining.
+        // Ideally we would add an Argument Condition Policy to limit the amount and recipient in the params, 
+        // but for this demo, we trust the ephemeral key only calls what we sign below.
+        session = createSessionStruct(
+          sessionOwner.address,
+          USDC_ADDRESS as Address,
+          "0xa9059cbb", // ERC20 transfer selector
+          0n,
+          salt
+        );
+      }
 
       consoleLog("SESSION-CREATE", "Built Session Structure", session);
 
@@ -544,17 +574,13 @@ const App: React.FC = () => {
         args: [[session]]
       });
 
-      consoleLog("SESSION-CREATE", "Constructed Enable Call Data", enableData);
-
       // We call the validator via the Safe 7579 Adapter (Fallback Handler)
       // BUT for enablement, we call the module directly via the Safe
-      // Actually, standard is to call `enableSessions` on the module.
-      // But Safe needs to execute it.
       await proposeTransaction(
         SMART_SESSIONS_VALIDATOR_ADDRESS,
         0n,
         enableData,
-        `Enable Session: ${expectedId.slice(0, 10)}...`,
+        `Enable Session: ${selectedToken} Transfer`,
         0,
         0
       );
@@ -564,6 +590,7 @@ const App: React.FC = () => {
         session,
         target: scheduleRecipient,
         amount: scheduleAmount,
+        token: selectedToken,
         permissionId: expectedId
       }));
 
@@ -573,7 +600,7 @@ const App: React.FC = () => {
       setScheduleRecipient("");
       setScheduleAmount("");
 
-      addLog(`Session Proposed! Please EXECUTE it in Queue before using it.`, "info");
+      addLog(`Session Proposed for ${selectedToken}! Please EXECUTE it in Queue.`, "info");
       setActiveTab('queue');
 
     } catch (e: any) {
@@ -589,22 +616,17 @@ const App: React.FC = () => {
 
     setLoading(true);
     try {
-      const { privateKey, session, target, amount, permissionId: storedId } = JSON.parse(stored);
+      const { privateKey, session, target, amount, token, permissionId: storedId } = JSON.parse(stored);
 
       consoleLog("SESSION-EXEC", "Retrieved Session from Storage", {
         storedId,
         target,
-        amount
+        amount,
+        token
       });
 
       const sessionOwner = privateKeyToAccount(privateKey);
       const currentId = getPermissionId(session);
-
-      consoleLog("SESSION-EXEC", "Verifying Permission ID", {
-        stored: storedId,
-        calculated: currentId,
-        match: storedId === currentId
-      });
 
       if (storedId && currentId !== storedId) {
         throw new Error("Session ID mismatch. Please clear schedule and try again.");
@@ -617,15 +639,8 @@ const App: React.FC = () => {
         publicClient,
         selectedNestedSafeAddr as Hex,
         session,
-        // FIX: Use .sign({ hash }) to sign the raw UserOp hash without "Ethereum Signed Message" prefix.
-        // The OwnableValidator expects a raw signature over the UserOp hash.
         async (hash) => (sessionOwner as any).sign({ hash }) 
       );
-
-      consoleLog("SESSION-EXEC", "Initialized Safe7579 Account", {
-        address: safeAccount.address,
-        validator: SMART_SESSIONS_VALIDATOR_ADDRESS
-      });
 
       const smartClient = createSmartAccountClient({
         account: safeAccount,
@@ -635,15 +650,33 @@ const App: React.FC = () => {
         userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
       });
 
-      addLog("Executing via Smart Session...", "info");
+      addLog(`Executing ${token} via Smart Session...`, "info");
 
-      // FIX: Use "0x" for native ETH transfers.
-      // This matches the "0xFFFFFFFF" selector in the permission.
-      const executionPayload = {
-        to: target,
-        value: parseEther(amount),
-        data: "0x" as Hex
-      };
+      let executionPayload;
+
+      if (token === 'USDC') {
+        const decimals = TOKENS.USDC.decimals;
+        const value = parseUnits(amount, decimals);
+        // Build ERC20 Transfer Call
+        const calldata = encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [target as Address, value]
+        });
+
+        executionPayload = {
+            to: USDC_ADDRESS as Address,
+            value: 0n,
+            data: calldata
+        };
+      } else {
+        // Native ETH Transfer
+        executionPayload = {
+            to: target as Address,
+            value: parseEther(amount),
+            data: "0x" as Hex
+        };
+      }
 
       consoleLog("SESSION-EXEC", "Sending UserOp (Execution)", executionPayload);
 
@@ -988,6 +1021,26 @@ const App: React.FC = () => {
     addLog("Queue cleared via Debug", "info");
   };
 
+  // Helper Component: Token Selector
+  const TokenSelector = () => (
+    <div style={{ display: 'flex', gap: '8px', marginBottom: '1rem' }}>
+        {(['ETH', 'USDC'] as const).map(t => (
+            <button 
+                key={t}
+                onClick={() => { setSelectedToken(t); setSendAmount(""); setScheduleAmount(""); }}
+                className="chip"
+                style={{ 
+                    borderColor: selectedToken === t ? 'var(--primary)' : 'var(--border)',
+                    background: selectedToken === t ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
+                    color: selectedToken === t ? 'white' : 'var(--text-secondary)'
+                }}
+            >
+                {t}
+            </button>
+        ))}
+    </div>
+  );
+
   const isDashboard = myNestedSafes.length > 0;
 
   const currentSafeQueue = queuedTxs.filter(t => {
@@ -1107,15 +1160,33 @@ const App: React.FC = () => {
 
               {activeTab === 'transfer' && (
                 <>
+                  <div className="section-label">Make Transfer</div>
+                  
+                  <TokenSelector />
+
                   <div className="input-group">
                     <label>Recipient Address</label>
                     <input placeholder="0x..." value={recipient} onChange={e => setRecipient(e.target.value)} />
                   </div>
                   <div className="input-group">
-                    <label>Amount (ETH)</label>
+                    <label>Amount ({selectedToken})</label>
                     <input type="number" placeholder="0.0" value={sendAmount} onChange={e => setSendAmount(e.target.value)} />
                   </div>
-                  <button className="action-btn" onClick={() => proposeTransaction(recipient, parseEther(sendAmount), "0x", `Transfer ${sendAmount} ETH`)} disabled={loading || !isCurrentSafeOwner}>
+                  <button className="action-btn" onClick={() => {
+                      if (!sendAmount || !recipient) return;
+                      if(selectedToken === 'ETH') {
+                          proposeTransaction(recipient, parseEther(sendAmount), "0x", `Transfer ${sendAmount} ETH`);
+                      } else {
+                          const amount = parseUnits(sendAmount, 6);
+                          const data = encodeFunctionData({
+                              abi: ERC20_ABI,
+                              functionName: "transfer",
+                              args: [recipient as Address, amount]
+                          });
+                          // 0 Value, Call to USDC Contract
+                          proposeTransaction(USDC_ADDRESS, 0n, data, `Transfer ${sendAmount} USDC`);
+                      }
+                  }} disabled={loading || !isCurrentSafeOwner}>
                     {nestedThreshold > 1 ? `Create Proposal (${nestedThreshold} sigs needed)` : "Execute Transaction"}
                   </button>
                 </>
@@ -1130,12 +1201,15 @@ const App: React.FC = () => {
 
                   {!hasStoredSchedule ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                      
+                      <TokenSelector />
+
                       <div className="input-group">
                         <label>Recipient Address</label>
                         <input placeholder="0x..." value={scheduleRecipient} onChange={e => setScheduleRecipient(e.target.value)} />
                       </div>
                       <div className="input-group">
-                        <label>Amount (ETH)</label>
+                        <label>Amount ({selectedToken})</label>
                         <input type="number" placeholder="0.0" value={scheduleAmount} onChange={e => setScheduleAmount(e.target.value)} />
                       </div>
                       <button className="action-btn" onClick={handleCreateSchedule} disabled={loading || !isCurrentSafeOwner}>
@@ -1149,8 +1223,9 @@ const App: React.FC = () => {
                         <h3 style={{ margin: 0, fontSize: '1rem' }}>Transfer Ready</h3>
                       </div>
                       <div style={{ fontSize: '0.9rem', marginBottom: '1rem' }}>
+                        <div><strong>Asset:</strong> {JSON.parse(localStorage.getItem("scheduled_session") || "{}").token || 'ETH'}</div>
                         <div><strong>Target:</strong> {scheduledInfo?.target}</div>
-                        <div><strong>Amount:</strong> {scheduledInfo?.amount} ETH</div>
+                        <div><strong>Amount:</strong> {scheduledInfo?.amount}</div>
                         <div style={{ color: 'var(--text-secondary)', marginTop: '5px' }}>Key is stored locally. This action does not require owner signatures, only the Session Key.</div>
                         <div style={{ marginTop: '10px', color: isSessionEnabledOnChain ? 'var(--success)' : '#fbbf24', fontWeight: '600' }}>
                           Status: {isSessionEnabledOnChain ? "Active & Ready" : "Pending Execution on Safe"}
