@@ -21,23 +21,37 @@ export type SafeInfo = {
 };
 
 // --- HELPER: Refresh Paymaster Data ---
-// Needed when we manually bump verification gas for Passkeys
 async function refreshPaymasterData(userOp: any) {
   console.log('[PasskeyClient] Refreshing Paymaster Data...');
 
-  const rpcUserOp = {
+  const hex = (v: any) => toHex(BigInt(v || 0));
+
+  // Construct standard v0.7 UserOperation object
+  const rpcUserOp: any = {
     sender: userOp.sender,
-    nonce: toHex(BigInt(userOp.nonce)),
+    nonce: hex(userOp.nonce),
     callData: userOp.callData,
-    callGasLimit: toHex(BigInt(userOp.callGasLimit)),
-    verificationGasLimit: toHex(BigInt(userOp.verificationGasLimit)),
-    preVerificationGas: toHex(BigInt(userOp.preVerificationGas)),
-    maxFeePerGas: toHex(BigInt(userOp.maxFeePerGas)),
-    maxPriorityFeePerGas: toHex(BigInt(userOp.maxPriorityFeePerGas)),
-    paymasterVerificationGasLimit: toHex(BigInt(userOp.paymasterVerificationGasLimit || 0n)),
-    paymasterPostOpGasLimit: toHex(BigInt(userOp.paymasterPostOpGasLimit || 0n)),
-    initCode: userOp.initCode || "0x",
+    callGasLimit: hex(userOp.callGasLimit),
+    verificationGasLimit: hex(userOp.verificationGasLimit),
+    preVerificationGas: hex(userOp.preVerificationGas),
+    maxFeePerGas: hex(userOp.maxFeePerGas),
+    maxPriorityFeePerGas: hex(userOp.maxPriorityFeePerGas),
+    paymasterVerificationGasLimit: hex(userOp.paymasterVerificationGasLimit),
+    paymasterPostOpGasLimit: hex(userOp.paymasterPostOpGasLimit),
+    signature: userOp.signature || "0x"
   };
+
+  // Handle InitCode: In v0.7, we use 'factory' and 'factoryData'
+  // If userOp has these (from SDK), use them.
+  if (userOp.factory && userOp.factory !== '0x') {
+      rpcUserOp.factory = userOp.factory;
+      rpcUserOp.factoryData = userOp.factoryData || "0x";
+  } else if (userOp.initCode && userOp.initCode !== "0x" && userOp.initCode.length > 2) {
+      // Fallback: If SDK provided initCode but we need factory/factoryData (shouldn't happen on deployed accounts)
+      rpcUserOp.factory = userOp.initCode.slice(0, 42);
+      rpcUserOp.factoryData = "0x" + userOp.initCode.slice(42);
+  }
+  // IMPORTANT: Do NOT include 'initCode' key in the final object for v0.7
 
   const body = {
     id: 1,
@@ -46,7 +60,7 @@ async function refreshPaymasterData(userOp: any) {
     params: [
       rpcUserOp,
       ENTRYPOINT_0_7,
-      toHex(84532), // Chain ID (Base Sepolia)
+      toHex(84532), // Base Sepolia Chain ID
       {}
     ]
   };
@@ -65,20 +79,18 @@ async function refreshPaymasterData(userOp: any) {
 
   const result = json.result;
 
-  // Update userOp with new Paymaster fields
+  // Apply results back to the userOp object
   if (result.paymaster) userOp.paymaster = result.paymaster;
   if (result.paymasterData) userOp.paymasterData = result.paymasterData;
   if (result.paymasterVerificationGasLimit) userOp.paymasterVerificationGasLimit = BigInt(result.paymasterVerificationGasLimit);
   if (result.paymasterPostOpGasLimit) userOp.paymasterPostOpGasLimit = BigInt(result.paymasterPostOpGasLimit);
 
-  // Update gas limits if the paymaster returned updated ones
   if (result.verificationGasLimit) userOp.verificationGasLimit = BigInt(result.verificationGasLimit);
   if (result.preVerificationGas) userOp.preVerificationGas = BigInt(result.preVerificationGas);
   if (result.callGasLimit) userOp.callGasLimit = BigInt(result.callGasLimit);
 
   console.log('[PasskeyClient] Paymaster Data Refreshed');
 }
-
 
 // Initialize the Safe SDK with the Passkey
 export const getSafe4337Pack = async (passkey: PasskeyArgType) => {

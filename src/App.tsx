@@ -1165,113 +1165,132 @@ const App: React.FC = () => {
   const executeQueuedTx = async (tx: QueuedTx) => {
     if (!selectedSafeAddr || !selectedNestedSafeAddr) return;
 
-    // We use the currently connected Parent Safe (Phantom or Passkey) to submit the transaction 
-    // and pay the gas (via Paymaster).
-
     try {
       setLoading(true);
-
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
 
-      // 1. Construct Signatures (Pre-Validated / Type 1)
-      // We check which owners have called 'approveHash' on the Nested Safe.
+      // 1. Check if Nested Safe is deployed
+      const code = await publicClient.getBytecode({ address: selectedNestedSafeAddr as Hex });
+      const isDeployed = code && code !== "0x";
+
+      // 2. Construct Signatures
+      // We need signatures for the threshold. 
+      // Since we are the Parent Safe (Owner), we can provide a Pre-Validated Signature (Type 1) for ourselves.
+
       const sortedOwners = [...nestedOwners].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
       let signatures = "0x";
 
       for (const owner of sortedOwners) {
-        // Check if this owner has approved the hash on-chain
         let isApproved = 0n;
-        try {
-          isApproved = await publicClient.readContract({
-            address: selectedNestedSafeAddr as Hex,
-            abi: SAFE_ABI,
-            functionName: "approvedHashes",
-            args: [owner as Hex, tx.hash as Hex]
-          });
-        } catch (e) {
-          // Safe likely undeployed. 
-          // If this owner matches the current signer (Parent Safe), we can implicitly assume they are signing NOW via the UserOp.
-          // BUT, for 'execTransaction' signature format, we need to be careful.
-          // For this demo, we will treat errors as "Not Approved on-chain".
+
+        // Condition A: On-chain Approval (for other owners or deployed safe)
+        if (isDeployed) {
+          try {
+            isApproved = await publicClient.readContract({
+              address: selectedNestedSafeAddr as Hex,
+              abi: SAFE_ABI,
+              functionName: "approvedHashes",
+              args: [owner as Hex, tx.hash as Hex]
+            });
+          } catch (e) { /* Ignore read errors */ }
         }
 
-        // If approved (returns 1n), append the Pre-Validated Signature format:
-        // {32-bytes owner} + {32-bytes 0} + {1-byte 01}
-        if (isApproved === 1n) {
+        // Condition B: Implicit Approval (Current Signer/Parent Safe)
+        // If the owner is US (the Parent Safe), we are executing the tx, so we implicitly sign it.
+        const isCurrentParent = owner.toLowerCase() === selectedSafeAddr.toLowerCase();
+
+        if (isApproved === 1n || isCurrentParent) {
+          // Pre-Validated Signature Format (r=Owner, s=0, v=1)
           signatures += pad(owner as Hex, { size: 32 }).slice(2);
           signatures += pad("0x0", { size: 32 }).slice(2);
           signatures += "01";
         }
       }
 
-      // 2. Encode the Execution Call
+      // 3. Prepare Execution Data
       const execData = encodeFunctionData({
         abi: SAFE_ABI,
         functionName: "execTransaction",
         args: [
-          tx.to as Hex,
-          BigInt(tx.value),
-          tx.data as Hex,
-          tx.operation,
-          0n, 0n, 0n, // SafeTxGas, BaseGas, GasPrice (0 for 4337/Bundler)
-          "0x0000000000000000000000000000000000000000", // GasToken
-          "0x0000000000000000000000000000000000000000", // RefundReceiver
+          tx.to as Hex, BigInt(tx.value), tx.data as Hex, tx.operation,
+          0n, 0n, 0n,
+          "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000",
           signatures as Hex
         ]
       });
 
+      // 4. Build Batch (Deploy + Execute)
+      const txsToExecute = [];
+
+      if (!isDeployed) {
+        const nestedSafeInfo = myNestedSafes.find(s => s.address === selectedNestedSafeAddr);
+        if (nestedSafeInfo) {
+          addLog("Nested Safe is undeployed. Adding deployment to batch...", "info");
+
+          const provider = loginMethod === 'phantom'
+            ? ((window as any).phantom?.ethereum || (window as any).ethereum)
+            : PUBLIC_RPC;
+
+          // We use selectedSafeAddr as signer just to satisfy the SDK init requirements for prediction
+          const protocolKit = await Safe.init({
+            provider,
+            signer: selectedSafeAddr,
+            predictedSafe: {
+              safeAccountConfig: { owners: [selectedSafeAddr], threshold: 1 },
+              safeDeploymentConfig: { saltNonce: nestedSafeInfo.salt }
+            }
+          });
+
+          const deployTx = await protocolKit.createSafeDeploymentTransaction();
+          txsToExecute.push({
+            to: deployTx.to,
+            value: deployTx.value,
+            data: deployTx.data
+          });
+        }
+      }
+
+      txsToExecute.push({
+        to: selectedNestedSafeAddr,
+        value: '0',
+        data: execData
+      });
+
       let txHash;
 
-      // 3. Submit via Connected Method
+      // 5. Submit Batch
       if (loginMethod === 'phantom' && walletClient) {
-        // --- OPTION A: PHANTOM (Permissionless.js) ---
-
         const parent = mySafes.find(s => s.address === selectedSafeAddr);
         if (!parent) throw new Error("Parent Safe info not found");
 
         const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
         const safeAccount = await toSafeSmartAccount({
-          client: publicClient,
-          owners: [walletClient],
-          entryPoint: { address: entryPoint07Address, version: "0.7" },
-          version: "1.4.1",
-          address: parent.address as Hex,
-          saltNonce: BigInt(parent.salt)
+          client: publicClient, owners: [walletClient], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1",
+          address: parent.address as Hex, saltNonce: BigInt(parent.salt)
         });
 
         const smartClient = createSmartAccountClient({
-          account: safeAccount,
-          chain: baseSepolia,
-          bundlerTransport: http(PIMLICO_URL),
-          paymaster: pimlicoClient,
+          account: safeAccount, chain: baseSepolia, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
           userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
         });
 
-        txHash = await smartClient.sendTransaction({
-          to: selectedNestedSafeAddr as Hex,
-          value: 0n,
-          data: execData
+        const userOpHash = await smartClient.sendUserOperation({
+          calls: txsToExecute.map(t => ({
+            to: t.to as Hex,
+            value: BigInt(t.value),
+            data: t.data as Hex
+          }))
         });
+        txHash = userOpHash;
 
       } else if (loginMethod === 'passkey' && activePasskey) {
-        // --- OPTION B: PASSKEY (Safe SDK) ---
-
-        const txData = {
-          to: selectedNestedSafeAddr,
-          value: '0',
-          data: execData
-        };
-
-        txHash = await executePasskeyTransaction(activePasskey, [txData]);
-
-      } else {
-        throw new Error("No active wallet or passkey found.");
+        txHash = await executePasskeyTransaction(activePasskey, txsToExecute);
       }
 
       addLog(`Execution Sent! TX: ${txHash}`, "success");
 
-      // 4. Cleanup Queue
+      // 6. Cleanup Queue
       const newQueue = queuedTxs.filter(t => t.hash !== tx.hash);
       setQueuedTxs(newQueue);
       queueRef.current = newQueue;
@@ -1280,7 +1299,7 @@ const App: React.FC = () => {
       setTimeout(() => {
         fetchData(selectedNestedSafeAddr);
         setActiveTab('history');
-      }, 4000);
+      }, 5000);
 
     } catch (e: any) {
       addLog(`Execution Failed: ${e.message}`, "error");
