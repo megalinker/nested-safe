@@ -35,14 +35,30 @@ export const getPermissionId = (session: any): Hex => {
     ));
 };
 
-export const createSessionStruct = (sessionOwner: Address, targetAddress: Address, amountWei: bigint, salt: Hex) => {
-    // FIX: Policies MUST be sorted by address for the Validator to store/retrieve them correctly.
-    const policies = [
-        encodePolicy('value', amountWei),
-        encodePolicy('usage', 1n)
-    ].sort((a, b) => a.policy.toLowerCase().localeCompare(b.policy.toLowerCase()));
+export const createSessionStruct = (
+    sessionOwner: Address,
+    targetContract: Address, // For ETH: Recipient. For USDC: USDC_ADDR
+    selector: Hex,           // For ETH: 0xFFFFFFFF. For USDC: 0xa9059cbb
+    nativeValueLimit: bigint,// Only applies to ETH value
+    salt: Hex
+) => {
 
-    // FIX: Add a Sudo policy to userOpPolicies to allow Paymasters (minPolicies=1 requirement)
+    // 1. Build Policies
+    const policiesList = [];
+
+    // Always limit usage to 1 time for this demo
+    policiesList.push(encodePolicy('usage', 1n));
+
+    // If sending ETH (native), add value limit. 
+    // If sending USDC, native value is 0, so we can skip or set to 0.
+    if (nativeValueLimit > 0n) {
+        policiesList.push(encodePolicy('value', nativeValueLimit));
+    }
+
+    // Sort policies by address (required by 7579)
+    const policies = policiesList.sort((a, b) => a.policy.toLowerCase().localeCompare(b.policy.toLowerCase()));
+
+    // Sudo policy for Paymaster compatibility
     const userOpPolicies = [
         encodePolicy('sudo')
     ];
@@ -57,10 +73,9 @@ export const createSessionStruct = (sessionOwner: Address, targetAddress: Addres
         userOpPolicies: userOpPolicies,
         erc7739Policies: { allowedERC7739Content: [], erc1271Policies: [] },
         actions: [{
-            actionTarget: targetAddress,
-            // FIX: Use 0xFFFFFFFF for native ETH transfers (matches IdLib.VALUE_SELECTOR)
-            actionTargetSelector: "0xFFFFFFFF" as Hex,
-            actionPolicies: policies 
+            actionTarget: targetContract,
+            actionTargetSelector: selector,
+            actionPolicies: policies
         }],
         permitERC4337Paymaster: true
     };
