@@ -287,11 +287,6 @@ const App: React.FC = () => {
   const [txHistory, setTxHistory] = useState<SafeTx[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Module State
-  const [is7579AdapterEnabled, setIs7579AdapterEnabled] = useState<boolean>(false);
-  const [currentFallbackHandler, setCurrentFallbackHandler] = useState<string>("0x");
-  const [isValidatorInstalled, setIsValidatorInstalled] = useState<boolean>(false);
-
   // Queue State
   const [queuedTxs, setQueuedTxs] = useState<QueuedTx[]>([]);
   const queueRef = useRef<QueuedTx[]>([]);
@@ -653,42 +648,6 @@ const App: React.FC = () => {
 
         setNestedNonce(Number(await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "nonce" })));
 
-        // 3. Module & Fallback Handler Check
-        const isEnabled = await publicClient.readContract({
-          address: address as Hex,
-          abi: SAFE_ABI,
-          functionName: "isModuleEnabled",
-          args: [SAFE_7579_ADAPTER_ADDRESS]
-        });
-        setIs7579AdapterEnabled(isEnabled);
-
-        const fallbackHandler = await publicClient.getStorageAt({
-          address: address as Hex,
-          slot: FALLBACK_HANDLER_STORAGE_SLOT as Hex
-        });
-        const handlerAddress = fallbackHandler ? `0x${fallbackHandler.slice(-40)}` : "0x";
-        setCurrentFallbackHandler(handlerAddress);
-
-        // NEW: Check if the Smart Sessions Validator is actually installed in the adapter
-        if (isEnabled) {
-          try {
-            const isInstalled = await publicClient.readContract({
-              address: SAFE_7579_ADAPTER_ADDRESS,
-              abi: ADAPTER_7579_ABI,
-              functionName: "isModuleInstalled",
-              args: [
-                1n, // moduleType: 1 is Validator
-                SMART_SESSIONS_VALIDATOR_ADDRESS,
-                address as Hex // context is the safe address
-              ]
-            });
-            setIsValidatorInstalled(isInstalled);
-          } catch (e) {
-            console.log("Validator check failed, adapter might not be initialized");
-            setIsValidatorInstalled(false);
-          }
-        }
-
         // NEW: If there is a stored session, check its specific status
         const stored = localStorage.getItem("scheduled_session");
         if (stored) {
@@ -710,10 +669,6 @@ const App: React.FC = () => {
           setNestedThreshold(0);
         }
         setNestedNonce(0);
-
-        // Reset Module state for counterfactual safes
-        setIs7579AdapterEnabled(false);
-        setCurrentFallbackHandler("0x");
       }
 
     } catch (e: any) {
@@ -750,44 +705,48 @@ const App: React.FC = () => {
     setLoading(true);
 
     try {
-      addLog(`Preparing schedule for ${timePreviews.local}...`, "info");
+      addLog(`Checking on-chain status for ${selectedNestedSafeAddr.slice(0, 8)}...`, "info");
 
-      const privateKey = generatePrivateKey();
-      const sessionOwner = privateKeyToAccount(privateKey);
-      const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
+      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const targetSafe = selectedNestedSafeAddr as Address;
+      const adapterAddr = SAFE_7579_ADAPTER_ADDRESS.toLowerCase();
 
-      // Create session with the validAfter timestamp
-      const session = selectedToken === 'ETH'
-        ? createSessionStruct(sessionOwner.address, scheduleRecipient as Address, "0xFFFFFFFF", parseEther(scheduleAmount), salt, timePreviews.unix)
-        : createSessionStruct(sessionOwner.address, USDC_ADDRESS as Address, "0xa9059cbb", 0n, salt, timePreviews.unix);
+      // 1. PERFORM ON-CHAIN CHECKS
+      const [isModuleEnabled, rawFallback] = await Promise.all([
+        publicClient.readContract({
+          address: targetSafe,
+          abi: SAFE_ABI,
+          functionName: "isModuleEnabled",
+          args: [SAFE_7579_ADAPTER_ADDRESS]
+        }).catch(() => false),
+        publicClient.getStorageAt({
+          address: targetSafe,
+          slot: FALLBACK_HANDLER_STORAGE_SLOT as Hex
+        }).catch(() => "0x")
+      ]);
 
-      const expectedId = getPermissionId(session);
-      const enableSessionCallData = encodeFunctionData({
-        abi: ENABLE_SESSIONS_ABI,
-        functionName: "enableSessions",
-        args: [[session]]
-      });
+      const currentFallback = rawFallback && rawFallback !== "0x"
+        ? `0x${rawFallback.slice(-40)}`.toLowerCase()
+        : "0x";
+
+      console.log("--- 7579 Status Check ---");
+      console.log("Module Enabled:", isModuleEnabled);
+      console.log("Fallback Match:", currentFallback === adapterAddr);
 
       const batch: { to: string; value: bigint; data: string; operation: number }[] = [];
 
-      // 1. Enable Adapter
-      if (!is7579AdapterEnabled) {
+      // 2. ONLY ADD SETUP STEPS IF THE MODULE IS NOT ENABLED
+      // If isModuleEnabled is true, initializeAccount has already been called and MUST NOT be called again.
+      if (!isModuleEnabled) {
+        addLog("Bundling first-time 7579 setup...", "info");
+
+        // A. Enable Module
         batch.push({
-          to: selectedNestedSafeAddr, value: 0n, operation: 0,
+          to: targetSafe, value: 0n, operation: 0,
           data: encodeFunctionData({ abi: SAFE_ABI, functionName: "enableModule", args: [SAFE_7579_ADAPTER_ADDRESS] })
         });
-      }
 
-      // 2. Set Fallback Handler
-      if (currentFallbackHandler.toLowerCase() !== SAFE_7579_ADAPTER_ADDRESS.toLowerCase()) {
-        batch.push({
-          to: selectedNestedSafeAddr, value: 0n, operation: 0,
-          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "setFallbackHandler", args: [SAFE_7579_ADAPTER_ADDRESS] })
-        });
-      }
-
-      // 3. Initialize Adapter (CRITICAL: Context appending)
-      if (!isValidatorInstalled) {
+        // B. Initialize Adapter (This maps the Safe to the Validator in the Adapter)
         const initData = encodeFunctionData({
           abi: ADAPTER_7579_ABI,
           functionName: "initializeAccount",
@@ -796,23 +755,47 @@ const App: React.FC = () => {
             { registry: "0x0000000000000000000000000000000000000000", attesters: [], threshold: 0 }
           ]
         });
-        // Append context only if using MultiSend via DelegateCall
         batch.push({
           to: SAFE_7579_ADAPTER_ADDRESS, value: 0n, operation: 0,
-          data: concat([initData, selectedNestedSafeAddr as Hex])
+          data: concat([initData, targetSafe])
         });
       }
 
-      // 4. Enable the Session
+      // C. Ensure Fallback Handler is set (Separate from module enable check for safety)
+      if (currentFallback !== adapterAddr) {
+        batch.push({
+          to: targetSafe, value: 0n, operation: 0,
+          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "setFallbackHandler", args: [SAFE_7579_ADAPTER_ADDRESS] })
+        });
+      }
+
+      // 3. PREPARE THE NEW SESSION (Always required)
+      const privateKey = generatePrivateKey();
+      const sessionOwner = privateKeyToAccount(privateKey);
+      const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
+
+      const session = selectedToken === 'ETH'
+        ? createSessionStruct(sessionOwner.address, scheduleRecipient as Address, "0xFFFFFFFF", parseEther(scheduleAmount), salt, timePreviews.unix)
+        : createSessionStruct(sessionOwner.address, USDC_ADDRESS as Address, "0xa9059cbb", 0n, salt, timePreviews.unix);
+
+      const expectedId = getPermissionId(session);
+
       batch.push({
         to: SMART_SESSIONS_VALIDATOR_ADDRESS, value: 0n, operation: 0,
-        data: enableSessionCallData
+        data: encodeFunctionData({
+          abi: ENABLE_SESSIONS_ABI,
+          functionName: "enableSessions",
+          args: [[session]]
+        })
       });
 
+      // 4. PROPOSE
       if (batch.length > 1) {
+        // MultiSend if we have setup steps + enableSession
         await proposeTransaction(MULTI_SEND_ADDRESS, 0n, encodeMultiSend(batch), `Setup 7579 + Enable ${selectedToken} Session`, 0, 1);
       } else {
-        await proposeTransaction(SMART_SESSIONS_VALIDATOR_ADDRESS, 0n, enableSessionCallData, `Enable ${selectedToken} Session`, 0, 0);
+        // Single call if only enableSession is needed
+        await proposeTransaction(SMART_SESSIONS_VALIDATOR_ADDRESS, 0n, batch[0].data as Hex, `Enable ${selectedToken} Session`, 0, 0);
       }
 
       localStorage.setItem("scheduled_session", JSON.stringify({
@@ -823,10 +806,10 @@ const App: React.FC = () => {
       setHasStoredSchedule(true);
       setScheduledInfo({ target: scheduleRecipient, amount: scheduleAmount });
       setActiveTab('queue');
-      addLog("Atomic setup proposed! Go to Queue to sign.", "success");
+      addLog("Session proposal created!", "success");
 
     } catch (e: any) {
-      addLog(`Batch failed: ${e.message}`, "error");
+      addLog(`Proposal failed: ${e.message}`, "error");
     } finally {
       setLoading(false);
     }
