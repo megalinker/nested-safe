@@ -633,8 +633,7 @@ const App: React.FC = () => {
 
         setNestedNonce(Number(await publicClient.readContract({ address: address as Hex, abi: SAFE_ABI, functionName: "nonce" })));
 
-        // 3. RESTORED: Module & Fallback Handler Check
-        // (Only runs if contract exists)
+        // 3. Module & Fallback Handler Check
         const isEnabled = await publicClient.readContract({
           address: address as Hex,
           abi: SAFE_ABI,
@@ -649,6 +648,35 @@ const App: React.FC = () => {
         });
         const handlerAddress = fallbackHandler ? `0x${fallbackHandler.slice(-40)}` : "0x";
         setCurrentFallbackHandler(handlerAddress);
+
+        // NEW: Check if the Smart Sessions Validator is actually installed in the adapter
+        if (isEnabled) {
+          try {
+            const isInstalled = await publicClient.readContract({
+              address: SAFE_7579_ADAPTER_ADDRESS,
+              abi: ADAPTER_7579_ABI,
+              functionName: "isModuleInstalled",
+              args: [
+                1n, // moduleType: 1 is Validator
+                SMART_SESSIONS_VALIDATOR_ADDRESS,
+                address as Hex // context is the safe address
+              ]
+            });
+            setIsValidatorInstalled(isInstalled);
+          } catch (e) {
+            console.log("Validator check failed, adapter might not be initialized");
+            setIsValidatorInstalled(false);
+          }
+        }
+
+        // NEW: If there is a stored session, check its specific status
+        const stored = localStorage.getItem("scheduled_session");
+        if (stored) {
+          const { permissionId } = JSON.parse(stored);
+          if (permissionId) {
+            await checkSessionStatus(address, permissionId);
+          }
+        }
 
       } catch (e) {
         consoleLog("FETCH", "Contract read failed (likely counterfactual)");
@@ -1029,105 +1057,6 @@ const App: React.FC = () => {
     }
   };
 
-  // --- RHINESTONE MODULE LOGIC ---
-
-  const handleInstallSmartSession = async () => {
-    // Check if the current user (Parent Safe) is an owner of the Nested Safe
-    if (!isCurrentSafeOwner) {
-      addLog("Only owner can install modules", "error");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      let offset = 0;
-
-      // 1. Enable 7579 Adapter as Module (Call)
-      if (!is7579AdapterEnabled) {
-        const enableData = encodeFunctionData({
-          abi: SAFE_ABI,
-          functionName: "enableModule",
-          args: [SAFE_7579_ADAPTER_ADDRESS]
-        });
-        await proposeTransaction(
-          selectedNestedSafeAddr, // Call self
-          0n,
-          enableData,
-          "1. Enable Safe 7579 Adapter",
-          offset,
-          0 // Call
-        );
-        offset++;
-      }
-
-      // 2. Set Adapter as Fallback Handler (Call)
-      const isFallbackSet = currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase();
-
-      if (!isFallbackSet) {
-        const fallbackData = encodeFunctionData({
-          abi: SAFE_ABI,
-          functionName: "setFallbackHandler",
-          args: [SAFE_7579_ADAPTER_ADDRESS]
-        });
-        await proposeTransaction(
-          selectedNestedSafeAddr, // Call self
-          0n,
-          fallbackData,
-          "2. Set 7579 Adapter as Fallback Handler",
-          offset,
-          0 // Call
-        );
-        offset++;
-      }
-
-      // 3. Initialize Adapter & Install Validator via CALL (Op 0)
-      // FIX: Allow either Phantom (walletClient) or Passkey (activePasskey)
-      if (loginMethod !== null) {
-        // Build the init call data
-        const initData = encodeFunctionData({
-          abi: ADAPTER_7579_ABI,
-          functionName: "initializeAccount",
-          args: [
-            [{
-              module: SMART_SESSIONS_VALIDATOR_ADDRESS,
-              initData: "0x",
-              moduleType: 1n
-            }],
-            {
-              registry: "0x0000000000000000000000000000000000000000",
-              attesters: [],
-              threshold: 0
-            }
-          ]
-        });
-
-        // For 7579 Adapter, we need to append the account address to the call data (context)
-        const paddedAddress = selectedNestedSafeAddr.slice(2);
-        const dataWithContext = concat([initData, `0x${paddedAddress}` as Hex]);
-
-        await proposeTransaction(
-          SAFE_7579_ADAPTER_ADDRESS, // Call the Adapter Directly
-          0n,
-          dataWithContext,
-          "3. Init Adapter & Install Validator",
-          offset,
-          0 // Call (Operation 0)
-        );
-
-        setIsValidatorInstalled(true);
-      } else {
-        addLog("Error: You must be logged in to propose transactions.", "error");
-      }
-
-      addLog("Transactions added to Queue.", "success");
-
-    } catch (e: any) {
-      addLog(`Failed to propose module installation: ${e.message}`, "error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const approveTxHash = async (hash: string) => {
     if (!selectedSafeAddr) return;
 
@@ -1398,13 +1327,6 @@ const App: React.FC = () => {
     await proposeTransaction(selectedNestedSafeAddr, 0n, data, `Change Threshold to ${newThresholdInput}`, 0, 0);
   };
 
-  const debugClearQueue = () => {
-    setQueuedTxs([]);
-    queueRef.current = [];
-    localStorage.removeItem("localTxQueue");
-    addLog("Queue cleared via Debug", "info");
-  };
-
   // Helper Component: Token Selector
   const TokenSelector = () => (
     <div style={{ display: 'flex', gap: '8px', marginBottom: '1rem' }}>
@@ -1440,6 +1362,7 @@ const App: React.FC = () => {
       </header>
 
       {!isDashboard ? (
+        /* --- ONBOARDING / SETUP VIEW --- */
         <div className="setup-container">
           <div className={`step-card ${!loginMethod ? 'active' : 'success'}`}>
             <div className="step-icon"><Icons.Key /></div>
@@ -1493,9 +1416,10 @@ const App: React.FC = () => {
           </div>
         </div>
       ) : (
+        /* --- MAIN DASHBOARD VIEW --- */
         <div className="dashboard-container">
           <div className="sidebar">
-            <div>
+            <div style={{ flex: 1 }}>
               <div className="section-label">
                 <span>Signers (Parent Safes)</span>
                 <button className="icon-btn" onClick={createParentSafe} title="Create New Safe"><Icons.Plus /></button>
@@ -1511,11 +1435,9 @@ const App: React.FC = () => {
                   />
                 ))}
               </div>
-            </div>
 
-            <hr style={{ width: '100%', borderColor: 'var(--border)', margin: '1rem 0' }} />
+              <hr style={{ width: '100%', borderColor: 'var(--border)', margin: '1.5rem 0' }} />
 
-            <div>
               <div className="section-label">
                 <span>Managed Safes (Targets)</span>
                 <button className="icon-btn" onClick={createNestedSafe} title="Deploy New Nested Safe"><Icons.Plus /></button>
@@ -1548,6 +1470,22 @@ const App: React.FC = () => {
                 ))}
               </div>
             </div>
+
+            {/* RESET APP - Moved to bottom of sidebar */}
+            <div style={{ marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
+              <button
+                className="action-btn secondary small"
+                style={{ width: '100%', opacity: 0.6, fontSize: '0.75rem' }}
+                onClick={() => {
+                  if (window.confirm("This will clear all local safes and passkeys from this browser. Continue?")) {
+                    localStorage.clear();
+                    window.location.reload();
+                  }
+                }}
+              >
+                Reset Application
+              </button>
+            </div>
           </div>
 
           <div className="main-panel">
@@ -1559,7 +1497,6 @@ const App: React.FC = () => {
                 Queue {currentSafeQueue.filter(t => t.nonce >= nestedNonce).length > 0 && <span className="header-badge" style={{ background: 'var(--primary)', border: 'none', marginLeft: '6px' }}>{currentSafeQueue.filter(t => t.nonce >= nestedNonce).length}</span>}
               </button>
               <button className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</button>
-              <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>Settings</button>
             </div>
 
             <div className="panel-content">
@@ -1569,12 +1506,11 @@ const App: React.FC = () => {
                 </div>
               )}
 
+              {/* --- TRANSFER TAB --- */}
               {activeTab === 'transfer' && (
                 <>
                   <div className="section-label">Make Transfer</div>
-
                   <TokenSelector />
-
                   <div className="input-group">
                     <label>Recipient Address</label>
                     <input placeholder="0x..." value={recipient} onChange={e => setRecipient(e.target.value)} />
@@ -1589,12 +1525,7 @@ const App: React.FC = () => {
                       proposeTransaction(recipient, parseEther(sendAmount), "0x", `Transfer ${sendAmount} ETH`);
                     } else {
                       const amount = parseUnits(sendAmount, 6);
-                      const data = encodeFunctionData({
-                        abi: ERC20_ABI,
-                        functionName: "transfer",
-                        args: [recipient as Address, amount]
-                      });
-                      // 0 Value, Call to USDC Contract
+                      const data = encodeFunctionData({ abi: ERC20_ABI, functionName: "transfer", args: [recipient as Address, amount] });
                       proposeTransaction(USDC_ADDRESS, 0n, data, `Transfer ${sendAmount} USDC`);
                     }
                   }} disabled={loading || !isCurrentSafeOwner}>
@@ -1603,18 +1534,18 @@ const App: React.FC = () => {
                 </>
               )}
 
+              {/* --- SCHEDULED TAB --- */}
               {activeTab === 'scheduled' && (
                 <div>
                   <div className="section-label">Scheduled Transfer (Smart Session)</div>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                    Create a permissioned session key that can execute a specific transfer later without requiring owner signatures.
+                    Create a session key to execute a transfer later without requiring owner signatures.
+                    The first time you do this, we'll automatically bundle the 7579 module installation.
                   </p>
 
                   {!hasStoredSchedule ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-
                       <TokenSelector />
-
                       <div className="input-group">
                         <label>Recipient Address</label>
                         <input placeholder="0x..." value={scheduleRecipient} onChange={e => setScheduleRecipient(e.target.value)} />
@@ -1630,16 +1561,22 @@ const App: React.FC = () => {
                   ) : (
                     <div style={{ background: 'var(--surface-1)', padding: '1.5rem', borderRadius: '8px', border: '1px solid var(--border)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '1rem' }}>
-                        <div style={{ color: 'var(--success)' }}><Icons.Check /></div>
-                        <h3 style={{ margin: 0, fontSize: '1rem' }}>Transfer Ready</h3>
+                        <div style={{ color: isSessionEnabledOnChain ? 'var(--success)' : '#fbbf24' }}>
+                          {isSessionEnabledOnChain ? <Icons.Check /> : <Icons.Refresh />}
+                        </div>
+                        <h3 style={{ margin: 0, fontSize: '1rem' }}>
+                          {isSessionEnabledOnChain ? "Transfer Ready" : "Session Pending Execution"}
+                        </h3>
                       </div>
                       <div style={{ fontSize: '0.9rem', marginBottom: '1rem' }}>
                         <div><strong>Asset:</strong> {JSON.parse(localStorage.getItem("scheduled_session") || "{}").token || 'ETH'}</div>
                         <div><strong>Target:</strong> {scheduledInfo?.target}</div>
                         <div><strong>Amount:</strong> {scheduledInfo?.amount}</div>
-                        <div style={{ color: 'var(--text-secondary)', marginTop: '5px' }}>Key is stored locally. This action does not require owner signatures, only the Session Key.</div>
-                        <div style={{ marginTop: '10px', color: isSessionEnabledOnChain ? 'var(--success)' : '#fbbf24', fontWeight: '600' }}>
-                          Status: {isSessionEnabledOnChain ? "Active & Ready" : "Pending Execution on Safe"}
+                        <div style={{ marginTop: '10px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                          {isSessionEnabledOnChain
+                            ? "Key is active. You can now execute this transfer using only the ephemeral session key."
+                            : "The proposal to enable this session is in the Queue. Once executed, you can send this transfer."
+                          }
                         </div>
                       </div>
 
@@ -1647,32 +1584,24 @@ const App: React.FC = () => {
                         <button className="action-btn" onClick={handleExecuteSchedule} disabled={loading || !isSessionEnabledOnChain}>
                           Execute Now
                         </button>
-                        {!isSessionEnabledOnChain && (
-                          <button className="action-btn secondary" onClick={() => {
-                            fetchData(selectedNestedSafeAddr); // Refreshes session check
-                          }} disabled={loading}>
-                            Check Status
-                          </button>
-                        )}
+                        <button className="action-btn secondary" onClick={() => fetchData(selectedNestedSafeAddr)} disabled={loading}>
+                          Check Status
+                        </button>
                         <button className="action-btn secondary" onClick={handleClearSchedule} disabled={loading}>
-                          Clear / Cancel
+                          Cancel
                         </button>
                       </div>
                     </div>
                   )}
-
-                  {/* Helper hint about Module installation */}
-                  <div style={{ marginTop: '2rem', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                    Note: Executing the schedule requires the <strong>Smart Sessions</strong> module to be installed and enabled on your Safe (Settings &gt; Install). The "Create Schedule" button will propose a transaction to Enable the specific session.
-                  </div>
                 </div>
               )}
 
+              {/* --- QUEUE TAB --- */}
               {activeTab === 'queue' && (
                 <div>
                   <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
                     <span>Pending Transactions (Next Nonce: {nestedNonce})</span>
-                    <button onClick={handleRefreshQueue} className="icon-btn" title="Force Refresh Queue & Nonce"><Icons.Refresh /></button>
+                    <button onClick={handleRefreshQueue} className="icon-btn" title="Force Refresh"><Icons.Refresh /></button>
                   </div>
 
                   {currentSafeQueue.filter(t => t.nonce >= nestedNonce).length === 0 ? (
@@ -1681,7 +1610,6 @@ const App: React.FC = () => {
                     currentSafeQueue.filter(t => t.nonce >= nestedNonce).sort((a, b) => a.nonce - b.nonce).map(tx => {
                       const approvals = approvalsMap[tx.hash] || [];
                       const hasSigned = approvals.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
-
                       const potentialCount = approvals.length + (hasSigned ? 0 : 1);
                       const readyToExec = potentialCount >= nestedThreshold;
                       const isNext = tx.nonce === nestedNonce;
@@ -1697,34 +1625,19 @@ const App: React.FC = () => {
                           <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem', fontFamily: 'monospace' }}>
                             Hash: {tx.hash.slice(0, 10)}...{tx.hash.slice(-8)}
                           </div>
-
                           <div style={{ display: 'flex', gap: '10px' }}>
-                            {!hasSigned && (
-                              <button className="action-btn secondary" onClick={() => approveTxHash(tx.hash)} disabled={loading || !isCurrentSafeOwner}>
-                                Sign (Approve)
-                              </button>
-                            )}
-
-                            {readyToExec && isNext && (
-                              <button className="action-btn" onClick={() => executeQueuedTx(tx)} disabled={loading || !isCurrentSafeOwner}>
-                                Execute Transaction
-                              </button>
-                            )}
+                            {!hasSigned && <button className="action-btn secondary" onClick={() => approveTxHash(tx.hash)} disabled={loading || !isCurrentSafeOwner}>Sign (Approve)</button>}
+                            {readyToExec && isNext && <button className="action-btn" onClick={() => executeQueuedTx(tx)} disabled={loading || !isCurrentSafeOwner}>Execute Transaction</button>}
                             {(!isNext) && <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', alignSelf: 'center' }}>Waiting for previous nonce...</span>}
                           </div>
                         </div>
                       );
                     })
                   )}
-
-                  {queuedTxs.length > 0 && <div style={{ textAlign: 'center', marginTop: '2rem' }}>
-                    <button className="action-btn small secondary" style={{ width: 'auto', display: 'inline-block' }} onClick={debugClearQueue}>
-                      Debug: Clear Queue LocalStorage
-                    </button>
-                  </div>}
                 </div>
               )}
 
+              {/* --- OWNERS TAB --- */}
               {activeTab === 'owners' && (
                 <>
                   <div className="section-label">Active Owners</div>
@@ -1736,16 +1649,12 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   ))}
-
                   <div className="section-label" style={{ marginTop: '2rem' }}>Quick Add My Safes</div>
                   <div className="quick-add-container">
                     {mySafes.filter(s => !nestedOwners.some(o => o.toLowerCase() === s.address.toLowerCase())).map(s => (
-                      <button key={s.address} className="chip" onClick={() => setNewOwnerInput(s.address)}>
-                        <Icons.Plus /> {s.name}
-                      </button>
+                      <button key={s.address} className="chip" onClick={() => setNewOwnerInput(s.address)}><Icons.Plus /> {s.name}</button>
                     ))}
                   </div>
-
                   <div className="input-group" style={{ marginTop: '1rem' }}>
                     <label>Add External Owner Address</label>
                     <div style={{ display: 'flex', gap: '10px' }}>
@@ -1753,94 +1662,51 @@ const App: React.FC = () => {
                       <button className="action-btn small" onClick={handleAddOwner} disabled={loading || !isCurrentSafeOwner}>Propose Add</button>
                     </div>
                   </div>
-
                   <hr style={{ margin: '2rem 0', borderColor: 'var(--border)' }} />
                   <div className="section-label">Security Threshold</div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-1)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--border)' }}>
                     <div>
                       <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Current Policy</div>
-                      <div style={{ fontSize: '1.1rem', fontWeight: '600' }}>
-                        {nestedThreshold} out of {nestedOwners.length} signatures required
-                      </div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: '600' }}>{nestedThreshold} out of {nestedOwners.length} signatures</div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <input
-                        type="number"
-                        min="1"
-                        max={nestedOwners.length}
-                        value={newThresholdInput}
-                        onChange={(e) => setNewThresholdInput(parseInt(e.target.value))}
-                        style={{ width: '60px' }}
-                      />
-                      <button className="action-btn small" onClick={handleUpdateThreshold} disabled={loading || !isCurrentSafeOwner}>
-                        Propose Update
-                      </button>
+                      <input type="number" min="1" max={nestedOwners.length} value={newThresholdInput} onChange={(e) => setNewThresholdInput(parseInt(e.target.value))} style={{ width: '60px' }} />
+                      <button className="action-btn small" onClick={handleUpdateThreshold} disabled={loading || !isCurrentSafeOwner}>Update</button>
                     </div>
                   </div>
                 </>
               )}
 
+              {/* --- HISTORY TAB --- */}
               {activeTab === 'history' && (
                 <div>
                   <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
                     <span>Recent Transactions</span>
                     <button onClick={() => fetchHistory(selectedNestedSafeAddr)} className="icon-btn"><Icons.Refresh /></button>
                   </div>
-
                   {loadingHistory ? (
-                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '2rem' }}>Loading history...</div>
+                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '2rem' }}>Loading...</div>
                   ) : txHistory.length === 0 ? (
-                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '2rem' }}>No transactions found.</div>
+                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', textAlign: 'center', marginTop: '2rem' }}>No history found.</div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       {txHistory.map((tx, i) => {
                         const isIncoming = tx.txType === 'ETHEREUM_TRANSACTION';
-
-                        // --- DEDUPLICATION LOGIC ---
-                        let valueBigInt = BigInt(0);
-
+                        let valueBigInt = BigInt(tx.value || 0);
                         if (isIncoming && tx.transfers) {
-                          const seen = new Set<string>();
-                          tx.transfers.forEach(t => {
-                            if (t.type === 'ETHER_TRANSFER') {
-                              // Deduplicate based on exact match of Value+From+To
-                              const key = `${t.value}-${t.from}-${t.to}`;
-                              if (!seen.has(key)) {
-                                valueBigInt += BigInt(t.value);
-                                seen.add(key);
-                              }
-                            }
-                          });
-                        } else if (tx.value) {
-                          valueBigInt = BigInt(tx.value);
+                          const seen = new Set();
+                          tx.transfers.forEach(t => { if (t.type === 'ETHER_TRANSFER') { const key = `${t.value}-${t.from}-${t.to}`; if (!seen.has(key)) { valueBigInt += BigInt(t.value); seen.add(key); } } });
                         }
-
                         if (isIncoming && valueBigInt === 0n) return null;
-
-                        const amount = formatEther(valueBigInt);
-                        const date = new Date(tx.executionDate).toLocaleDateString();
-
-                        let label = isIncoming ? "Received ETH" : "Executed TX";
-                        const counterParty = isIncoming ? tx.from : tx.to;
-                        const matchedSafe = mySafes.find(s => s.address.toLowerCase() === counterParty?.toLowerCase()) ||
-                          myNestedSafes.find(s => s.address.toLowerCase() === counterParty?.toLowerCase());
-
                         return (
-                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: 'var(--surface-1)', borderRadius: '8px', borderLeft: isIncoming ? '4px solid var(--success)' : '4px solid var(--primary)' }}>
+                          <div key={i} className="owner-row" style={{ borderLeft: isIncoming ? '4px solid var(--success)' : '4px solid var(--primary)', padding: '12px' }}>
                             <div>
-                              <div style={{ fontWeight: '600', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                {label}
-                                {matchedSafe && <span className="owner-tag" style={{ background: 'rgba(255,255,255,0.1)', color: 'white' }}>{matchedSafe.name}</span>}
-                              </div>
-                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{date}</div>
+                              <div style={{ fontWeight: '600', fontSize: '0.9rem' }}>{isIncoming ? "Received ETH" : "Executed TX"}</div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{new Date(tx.executionDate).toLocaleDateString()}</div>
                             </div>
                             <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontWeight: '600' }}>{amount} ETH</div>
-                              {tx.transactionHash && (
-                                <a href={`https://sepolia.basescan.org/tx/${tx.transactionHash}`} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px', justifyContent: 'flex-end' }}>
-                                  Explorer <Icons.ExternalLink />
-                                </a>
-                              )}
+                              <div style={{ fontWeight: '600' }}>{formatEther(valueBigInt)} ETH</div>
+                              {tx.transactionHash && <a href={`https://sepolia.basescan.org/tx/${tx.transactionHash}`} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: 'var(--primary)', textDecoration: 'none' }}>Explorer <Icons.ExternalLink /></a>}
                             </div>
                           </div>
                         )
@@ -1849,90 +1715,12 @@ const App: React.FC = () => {
                   )}
                 </div>
               )}
-
-              {activeTab === 'settings' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-
-                  {/* --- NEW RHINESTONE MODULE SECTION --- */}
-                  <div>
-                    <h3 style={{ margin: '0 0 1rem 0' }}>Rhinestone Modules</h3>
-
-                    {/* Fallback Handler Status */}
-                    <div style={{ marginBottom: '1rem', padding: '12px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span>Fallback Handler:</span>
-                        <span style={{ fontFamily: 'monospace' }}>{currentFallbackHandler}</span>
-                      </div>
-                      {currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase() ?
-                        <span style={{ color: 'var(--success)' }}>✓ Safe 7579 Adapter Active</span> :
-                        <span style={{ color: '#fbbf24' }}>⚠ Standard Safe Handler (Upgrade Needed)</span>
-                      }
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '8px' }}>
-                        <span>Validator Status:</span>
-                        <span>{isValidatorInstalled || (is7579AdapterEnabled && currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase() && isValidatorInstalled) ? "Installed" : "Not Installed"}</span>
-                      </div>
-                    </div>
-
-                    <div style={{
-                      background: 'var(--surface-1)',
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                      padding: '1.5rem',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '1.5rem'
-                    }}>
-                      <div style={{
-                        width: '40px', height: '40px',
-                        background: 'rgba(99, 102, 241, 0.1)',
-                        color: 'var(--primary)',
-                        borderRadius: '8px',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center'
-                      }}>
-                        <Icons.Module />
-                      </div>
-
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: '600', marginBottom: '4px' }}>Smart Sessions</div>
-                        <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                          Enables session keys and automated transactions via ERC-7579.
-                        </div>
-                      </div>
-
-                      {!(isValidatorInstalled || (is7579AdapterEnabled && currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase() && isValidatorInstalled)) && <button
-                        className="action-btn small"
-                        onClick={handleInstallSmartSession}
-                        disabled={loading || !isCurrentSafeOwner}
-                        style={{ width: 'auto' }}
-                      >
-                        Install Module
-                      </button>}
-
-                      {(isValidatorInstalled || (is7579AdapterEnabled && currentFallbackHandler.toLowerCase() === SAFE_7579_ADAPTER_ADDRESS.toLowerCase() && isValidatorInstalled)) && <div className="header-badge" style={{ background: 'var(--success)', color: 'white' }}>Installed</div>}
-                    </div>
-                  </div>
-
-                  <hr style={{ borderColor: 'var(--border)' }} />
-
-                  <div>
-                    <h3 style={{ margin: '0 0 1rem 0' }}>Reset App</h3>
-                    <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-                      Clear stored data to restart the onboarding flow. (Safes remain on-chain).
-                    </p>
-                    <button className="action-btn secondary" onClick={() => {
-                      localStorage.clear();
-                      window.location.reload();
-                    }}>Clear Storage & Reset</button>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* TERMINAL */}
+      {/* TERMINAL DRAWER */}
       <div className="terminal-drawer" style={{ transform: loading || logs.length > 0 ? 'translateY(0)' : 'translateY(100%)' }}>
         <div className="terminal-header" onClick={() => setLogs([])}>
           <span>System Logs (Click to clear)</span>
