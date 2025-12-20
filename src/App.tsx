@@ -313,7 +313,8 @@ const App: React.FC = () => {
   const [scheduleAmount, setScheduleAmount] = useState("");
   const [hasStoredSchedule, setHasStoredSchedule] = useState(false);
   const [scheduledInfo, setScheduledInfo] = useState<{ target: string, amount: string } | null>(null);
-  // NEW: Track on-chain session status
+  const [scheduleDate, setScheduleDate] = useState<string>("");
+
   const [isSessionEnabledOnChain, setIsSessionEnabledOnChain] = useState(false);
 
   // --- INITIALIZATION ---
@@ -406,6 +407,25 @@ const App: React.FC = () => {
   }, [selectedSafeAddr, nestedOwners]);
 
   useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs]);
+
+  const timePreviews = useMemo(() => {
+    if (!scheduleDate) return null;
+    const d = new Date(scheduleDate);
+    if (isNaN(d.getTime())) return null;
+
+    const options: Intl.DateTimeFormatOptions = {
+      year: 'numeric', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: true
+    };
+
+    return {
+      local: d.toLocaleString(undefined, options),
+      utc: d.toLocaleString('en-GB', { ...options, timeZone: 'UTC' }) + " UTC",
+      est: d.toLocaleString('en-US', { ...options, timeZone: 'America/New_York' }) + " EST",
+      unix: Math.floor(d.getTime() / 1000)
+    };
+  }, [scheduleDate]);
 
   const addLog = (msg: string, type: 'info' | 'success' | 'error' = 'info') => {
     setLogs(prev => [...prev, { msg, type, timestamp: new Date().toLocaleTimeString() }]);
@@ -723,63 +743,50 @@ const App: React.FC = () => {
   };
 
   const handleCreateSchedule = async () => {
-    if (!scheduleRecipient || !scheduleAmount || !selectedNestedSafeAddr) return;
+    if (!scheduleRecipient || !scheduleAmount || !selectedNestedSafeAddr || !timePreviews) {
+      addLog("Missing fields or invalid date", "error");
+      return;
+    }
     setLoading(true);
 
     try {
-      addLog("Preparing atomic setup and session...", "info");
+      addLog(`Preparing schedule for ${timePreviews.local}...`, "info");
 
       const privateKey = generatePrivateKey();
       const sessionOwner = privateKeyToAccount(privateKey);
       const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
 
-      // 1. Build the specific Session struct (USDC or ETH)
-      const amountWei = parseEther(scheduleAmount);
+      // Create session with the validAfter timestamp
       const session = selectedToken === 'ETH'
-        ? createSessionStruct(sessionOwner.address, scheduleRecipient as Address, "0xFFFFFFFF", amountWei, salt)
-        : createSessionStruct(sessionOwner.address, USDC_ADDRESS as Address, "0xa9059cbb", 0n, salt);
+        ? createSessionStruct(sessionOwner.address, scheduleRecipient as Address, "0xFFFFFFFF", parseEther(scheduleAmount), salt, timePreviews.unix)
+        : createSessionStruct(sessionOwner.address, USDC_ADDRESS as Address, "0xa9059cbb", 0n, salt, timePreviews.unix);
 
       const expectedId = getPermissionId(session);
-
-      // 2. Prepare the Enable Session call (Targeting the Validator)
       const enableSessionCallData = encodeFunctionData({
         abi: ENABLE_SESSIONS_ABI,
         functionName: "enableSessions",
         args: [[session]]
       });
 
-      // 3. Build the Batch
       const batch: { to: string; value: bigint; data: string; operation: number }[] = [];
 
-      // ACTION A: Enable the 7579 Adapter as a module
+      // 1. Enable Adapter
       if (!is7579AdapterEnabled) {
         batch.push({
-          to: selectedNestedSafeAddr,
-          value: 0n,
-          data: encodeFunctionData({
-            abi: SAFE_ABI,
-            functionName: "enableModule",
-            args: [SAFE_7579_ADAPTER_ADDRESS]
-          }),
-          operation: 0
+          to: selectedNestedSafeAddr, value: 0n, operation: 0,
+          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "enableModule", args: [SAFE_7579_ADAPTER_ADDRESS] })
         });
       }
 
-      // ACTION B: Set the 7579 Adapter as Fallback Handler
+      // 2. Set Fallback Handler
       if (currentFallbackHandler.toLowerCase() !== SAFE_7579_ADAPTER_ADDRESS.toLowerCase()) {
         batch.push({
-          to: selectedNestedSafeAddr,
-          value: 0n,
-          data: encodeFunctionData({
-            abi: SAFE_ABI,
-            functionName: "setFallbackHandler",
-            args: [SAFE_7579_ADAPTER_ADDRESS]
-          }),
-          operation: 0
+          to: selectedNestedSafeAddr, value: 0n, operation: 0,
+          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "setFallbackHandler", args: [SAFE_7579_ADAPTER_ADDRESS] })
         });
       }
 
-      // ACTION C: Initialize the Adapter (Install the Smart Sessions Validator)
+      // 3. Initialize Adapter (CRITICAL: Context appending)
       if (!isValidatorInstalled) {
         const initData = encodeFunctionData({
           abi: ADAPTER_7579_ABI,
@@ -789,69 +796,37 @@ const App: React.FC = () => {
             { registry: "0x0000000000000000000000000000000000000000", attesters: [], threshold: 0 }
           ]
         });
-        // Append the Safe address as context to the call
-        const dataWithContext = concat([initData, selectedNestedSafeAddr as Hex]);
-
+        // Append context only if using MultiSend via DelegateCall
         batch.push({
-          to: SAFE_7579_ADAPTER_ADDRESS,
-          value: 0n,
-          data: dataWithContext,
-          operation: 0
+          to: SAFE_7579_ADAPTER_ADDRESS, value: 0n, operation: 0,
+          data: concat([initData, selectedNestedSafeAddr as Hex])
         });
       }
 
-      // ACTION D: Enable the Session
+      // 4. Enable the Session
       batch.push({
-        to: SMART_SESSIONS_VALIDATOR_ADDRESS,
-        value: 0n,
-        data: enableSessionCallData,
-        operation: 0
+        to: SMART_SESSIONS_VALIDATOR_ADDRESS, value: 0n, operation: 0,
+        data: enableSessionCallData
       });
 
-      // 4. Propose the Single MultiSend Transaction
       if (batch.length > 1) {
-        const multiSendData = encodeMultiSend(batch);
-
-        // IMPORTANT: MultiSend MUST be called via DelegateCall (operation 1)
-        await proposeTransaction(
-          MULTI_SEND_ADDRESS,
-          0n,
-          multiSendData,
-          `Setup 7579 + Enable ${selectedToken} Session`,
-          0,
-          1 // <--- Operation 1 (DelegateCall)
-        );
+        await proposeTransaction(MULTI_SEND_ADDRESS, 0n, encodeMultiSend(batch), `Setup 7579 + Enable ${selectedToken} Session`, 0, 1);
       } else {
-        // If already set up, just propose the session enablement
-        await proposeTransaction(
-          SMART_SESSIONS_VALIDATOR_ADDRESS,
-          0n,
-          enableSessionCallData,
-          `Enable ${selectedToken} Session`,
-          0,
-          0 // Standard Call
-        );
+        await proposeTransaction(SMART_SESSIONS_VALIDATOR_ADDRESS, 0n, enableSessionCallData, `Enable ${selectedToken} Session`, 0, 0);
       }
 
-      // 5. Save local state
       localStorage.setItem("scheduled_session", JSON.stringify({
-        privateKey,
-        session,
-        target: scheduleRecipient,
-        amount: scheduleAmount,
-        token: selectedToken,
-        permissionId: expectedId
+        privateKey, session, target: scheduleRecipient, amount: scheduleAmount,
+        token: selectedToken, permissionId: expectedId, startDate: timePreviews.local
       }));
 
       setHasStoredSchedule(true);
       setScheduledInfo({ target: scheduleRecipient, amount: scheduleAmount });
-      setIsSessionEnabledOnChain(false);
-
-      addLog("Atomic setup proposed! Switch to 'Queue' to sign and execute.", "success");
       setActiveTab('queue');
+      addLog("Atomic setup proposed! Go to Queue to sign.", "success");
 
     } catch (e: any) {
-      addLog(`Batch preparation failed: ${e.message}`, "error");
+      addLog(`Batch failed: ${e.message}`, "error");
     } finally {
       setLoading(false);
     }
@@ -1550,11 +1525,35 @@ const App: React.FC = () => {
                         <label>Recipient Address</label>
                         <input placeholder="0x..." value={scheduleRecipient} onChange={e => setScheduleRecipient(e.target.value)} />
                       </div>
-                      <div className="input-group">
-                        <label>Amount ({selectedToken})</label>
-                        <input type="number" placeholder="0.0" value={scheduleAmount} onChange={e => setScheduleAmount(e.target.value)} />
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                        <div className="input-group">
+                          <label>Amount ({selectedToken})</label>
+                          <input type="number" placeholder="0.0" value={scheduleAmount} onChange={e => setScheduleAmount(e.target.value)} />
+                        </div>
+                        <div className="input-group">
+                          <label>Earliest Start Time (Local)</label>
+                          <input
+                            type="datetime-local"
+                            value={scheduleDate}
+                            onChange={e => setScheduleDate(e.target.value)}
+                            style={{ colorScheme: 'dark' }}
+                          />
+                        </div>
                       </div>
-                      <button className="action-btn" onClick={handleCreateSchedule} disabled={loading || !isCurrentSafeOwner}>
+
+                      {timePreviews && (
+                        <div style={{ background: 'rgba(99, 102, 241, 0.05)', padding: '12px', borderRadius: '8px', border: '1px solid var(--primary-glow)', fontSize: '0.8rem' }}>
+                          <div style={{ color: 'var(--primary)', fontWeight: 'bold', marginBottom: '5px' }}>Execution Thresholds:</div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr', gap: '4px' }}>
+                            <span style={{ color: 'var(--text-secondary)' }}>Local:</span> <span>{timePreviews.local}</span>
+                            <span style={{ color: 'var(--text-secondary)' }}>UTC:</span> <span>{timePreviews.utc}</span>
+                            <span style={{ color: 'var(--text-secondary)' }}>EST:</span> <span>{timePreviews.est}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      <button className="action-btn" onClick={handleCreateSchedule} disabled={loading || !isCurrentSafeOwner || !scheduleDate}>
                         Create Schedule Proposal
                       </button>
                     </div>
