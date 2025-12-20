@@ -910,8 +910,14 @@ const App: React.FC = () => {
       handleClearSchedule();
 
     } catch (e: any) {
-      addLog(`Execution Failed: ${e.message}`, "error");
-      if (e.message.includes("AA23")) addLog("Hint: Ensure the Enable Session transaction was executed on-chain.", "info");
+      const msg = e.message || "";
+      if (msg.includes("AA22") || msg.includes("expired") || msg.includes("not due")) {
+        const date = JSON.parse(localStorage.getItem("scheduled_session") || "{}").startDate;
+        addLog(`Policy Restriction: This transfer is not valid yet.`, "info");
+        addLog(`Please wait until: ${date}`, "info");
+      } else {
+        addLog(`Execution Failed: ${e.message}`, "error");
+      }
     } finally {
       setLoading(false);
     }
