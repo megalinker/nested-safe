@@ -14,7 +14,9 @@ import {
   concat,
   type Address,
   toHex,
-  hashTypedData
+  hashTypedData,
+  encodePacked,
+  size
 } from "viem";
 import { baseSepolia } from "viem/chains";
 import { entryPoint07Address } from "viem/account-abstraction";
@@ -101,6 +103,38 @@ const ENABLE_SESSIONS_ABI = parseAbi([
   "function enableSessions(Session[] calldata sessions) external returns (bytes32[])",
   "function isPermissionEnabled(bytes32 permissionId, address account) external view returns (bool)"
 ]);
+
+const MULTI_SEND_ADDRESS = "0x38869bf66a61cF6bDB996A6aE40D5853Fd43B526";
+
+const MULTI_SEND_ABI = parseAbi([
+  "function multiSend(bytes transactions) external"
+]);
+
+/**
+ * Encodes a batch of transactions for the Safe MultiSend contract
+ */
+const encodeMultiSend = (txs: { to: string; value: bigint; data: string; operation: number }[]) => {
+  return encodeFunctionData({
+    abi: MULTI_SEND_ABI,
+    functionName: "multiSend",
+    args: [
+      concat(
+        txs.map((tx) =>
+          encodePacked(
+            ["uint8", "address", "uint256", "uint256", "bytes"],
+            [
+              tx.operation,         // 0 for Call, 1 for DelegateCall
+              tx.to as Address,
+              tx.value,
+              BigInt(size(tx.data as Hex)), // Helper to get byte length
+              tx.data as Hex,
+            ]
+          )
+        )
+      ),
+    ],
+  });
+};
 
 // --- ICONS ---
 const Icons = {
@@ -661,72 +695,117 @@ const App: React.FC = () => {
   };
 
   const handleCreateSchedule = async () => {
-    if (!scheduleRecipient || !scheduleAmount) return;
+    if (!scheduleRecipient || !scheduleAmount || !selectedNestedSafeAddr) return;
     setLoading(true);
 
     try {
-      consoleLog("SESSION-CREATE", "Initiating Schedule Creation", {
-        recipient: scheduleRecipient,
-        amount: scheduleAmount,
-        token: selectedToken
-      });
+      addLog("Preparing atomic setup and session...", "info");
 
       const privateKey = generatePrivateKey();
       const sessionOwner = privateKeyToAccount(privateKey);
       const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
 
-      let session;
-      const isNative = selectedToken === 'ETH';
-
-      // NOTE: Ensure your createSessionStruct in utils/smartSessions.ts 
-      // accepts (owner, targetContract, selector, nativeValueLimit, salt)
-      if (isNative) {
-        // Native ETH: Target is Recipient, Selector is 0xFFFFFFFF, ValueLimit is amount
-        const amountWei = parseEther(scheduleAmount);
-        session = createSessionStruct(
-          sessionOwner.address,
-          scheduleRecipient as Address,
-          "0xFFFFFFFF",
-          amountWei,
-          salt
-        );
-      } else {
-        // USDC: Target is USDC Contract, Selector is transfer(address,uint256), ValueLimit is 0
-        // The policy will verify we call USDC contract.
-        // Usage limit 1 prevents draining.
-        // Ideally we would add an Argument Condition Policy to limit the amount and recipient in the params, 
-        // but for this demo, we trust the ephemeral key only calls what we sign below.
-        session = createSessionStruct(
-          sessionOwner.address,
-          USDC_ADDRESS as Address,
-          "0xa9059cbb", // ERC20 transfer selector
-          0n,
-          salt
-        );
-      }
-
-      consoleLog("SESSION-CREATE", "Built Session Structure", session);
+      // 1. Build the specific Session struct (USDC or ETH)
+      const amountWei = parseEther(scheduleAmount);
+      const session = selectedToken === 'ETH'
+        ? createSessionStruct(sessionOwner.address, scheduleRecipient as Address, "0xFFFFFFFF", amountWei, salt)
+        : createSessionStruct(sessionOwner.address, USDC_ADDRESS as Address, "0xa9059cbb", 0n, salt);
 
       const expectedId = getPermissionId(session);
-      consoleLog("SESSION-CREATE", "Calculated Permission ID", expectedId);
 
-      const enableData = encodeFunctionData({
+      // 2. Prepare the Enable Session call (Targeting the Validator)
+      const enableSessionCallData = encodeFunctionData({
         abi: ENABLE_SESSIONS_ABI,
         functionName: "enableSessions",
         args: [[session]]
       });
 
-      // We call the validator via the Safe 7579 Adapter (Fallback Handler)
-      // BUT for enablement, we call the module directly via the Safe
-      await proposeTransaction(
-        SMART_SESSIONS_VALIDATOR_ADDRESS,
-        0n,
-        enableData,
-        `Enable Session: ${selectedToken} Transfer`,
-        0,
-        0
-      );
+      // 3. Build the Batch
+      const batch: { to: string; value: bigint; data: string; operation: number }[] = [];
 
+      // ACTION A: Enable the 7579 Adapter as a module
+      if (!is7579AdapterEnabled) {
+        batch.push({
+          to: selectedNestedSafeAddr,
+          value: 0n,
+          data: encodeFunctionData({
+            abi: SAFE_ABI,
+            functionName: "enableModule",
+            args: [SAFE_7579_ADAPTER_ADDRESS]
+          }),
+          operation: 0
+        });
+      }
+
+      // ACTION B: Set the 7579 Adapter as Fallback Handler
+      if (currentFallbackHandler.toLowerCase() !== SAFE_7579_ADAPTER_ADDRESS.toLowerCase()) {
+        batch.push({
+          to: selectedNestedSafeAddr,
+          value: 0n,
+          data: encodeFunctionData({
+            abi: SAFE_ABI,
+            functionName: "setFallbackHandler",
+            args: [SAFE_7579_ADAPTER_ADDRESS]
+          }),
+          operation: 0
+        });
+      }
+
+      // ACTION C: Initialize the Adapter (Install the Smart Sessions Validator)
+      if (!isValidatorInstalled) {
+        const initData = encodeFunctionData({
+          abi: ADAPTER_7579_ABI,
+          functionName: "initializeAccount",
+          args: [
+            [{ module: SMART_SESSIONS_VALIDATOR_ADDRESS, initData: "0x", moduleType: 1n }],
+            { registry: "0x0000000000000000000000000000000000000000", attesters: [], threshold: 0 }
+          ]
+        });
+        // Append the Safe address as context to the call
+        const dataWithContext = concat([initData, selectedNestedSafeAddr as Hex]);
+
+        batch.push({
+          to: SAFE_7579_ADAPTER_ADDRESS,
+          value: 0n,
+          data: dataWithContext,
+          operation: 0
+        });
+      }
+
+      // ACTION D: Enable the Session
+      batch.push({
+        to: SMART_SESSIONS_VALIDATOR_ADDRESS,
+        value: 0n,
+        data: enableSessionCallData,
+        operation: 0
+      });
+
+      // 4. Propose the Single MultiSend Transaction
+      if (batch.length > 1) {
+        const multiSendData = encodeMultiSend(batch);
+
+        // IMPORTANT: MultiSend MUST be called via DelegateCall (operation 1)
+        await proposeTransaction(
+          MULTI_SEND_ADDRESS,
+          0n,
+          multiSendData,
+          `Setup 7579 + Enable ${selectedToken} Session`,
+          0,
+          1 // <--- Operation 1 (DelegateCall)
+        );
+      } else {
+        // If already set up, just propose the session enablement
+        await proposeTransaction(
+          SMART_SESSIONS_VALIDATOR_ADDRESS,
+          0n,
+          enableSessionCallData,
+          `Enable ${selectedToken} Session`,
+          0,
+          0 // Standard Call
+        );
+      }
+
+      // 5. Save local state
       localStorage.setItem("scheduled_session", JSON.stringify({
         privateKey,
         session,
@@ -738,15 +817,13 @@ const App: React.FC = () => {
 
       setHasStoredSchedule(true);
       setScheduledInfo({ target: scheduleRecipient, amount: scheduleAmount });
-      setIsSessionEnabledOnChain(false); // Assume false until executed
-      setScheduleRecipient("");
-      setScheduleAmount("");
+      setIsSessionEnabledOnChain(false);
 
-      addLog(`Session Proposed for ${selectedToken}! Please EXECUTE it in Queue.`, "info");
+      addLog("Atomic setup proposed! Switch to 'Queue' to sign and execute.", "success");
       setActiveTab('queue');
 
     } catch (e: any) {
-      addLog(`Schedule Creation Failed: ${e.message}`, "error");
+      addLog(`Batch preparation failed: ${e.message}`, "error");
     } finally {
       setLoading(false);
     }
