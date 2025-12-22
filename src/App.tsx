@@ -101,7 +101,8 @@ const ENABLE_SESSIONS_ABI = parseAbi([
   "struct ActionData { bytes4 actionTargetSelector; address actionTarget; PolicyData[] actionPolicies; }",
   "struct Session { address sessionValidator; bytes sessionValidatorInitData; bytes32 salt; PolicyData[] userOpPolicies; ERC7739Data erc7739Policies; ActionData[] actions; bool permitERC4337Paymaster; }",
   "function enableSessions(Session[] calldata sessions) external returns (bytes32[])",
-  "function isPermissionEnabled(bytes32 permissionId, address account) external view returns (bool)"
+  "function isPermissionEnabled(bytes32 permissionId, address account) external view returns (bool)",
+  "function removeSession(bytes32 permissionId) external"
 ]);
 
 const MULTI_SEND_ADDRESS = "0x38869bf66a61cF6bDB996A6aE40D5853Fd43B526";
@@ -914,6 +915,45 @@ const App: React.FC = () => {
     addLog("Local schedule data cleared", "info");
   };
 
+  const handleRevokeSessionOnChain = async () => {
+    const stored = localStorage.getItem("scheduled_session");
+    if (!stored || !selectedNestedSafeAddr) return;
+
+    const { permissionId } = JSON.parse(stored);
+    if (!permissionId) {
+      addLog("No Permission ID found to revoke.", "error");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      addLog("Proposing session revocation...", "info");
+
+      // 1. Encode the call to the Validator
+      const data = encodeFunctionData({
+        abi: ENABLE_SESSIONS_ABI,
+        functionName: "removeSession",
+        args: [permissionId as Hex]
+      });
+
+      // 2. Propose the transaction (Nested Safe calls the Validator)
+      // We send this to the queue just like a transfer or owner change
+      await proposeTransaction(
+        SMART_SESSIONS_VALIDATOR_ADDRESS,
+        0n,
+        data,
+        `Revoke Smart Session: ${permissionId.slice(0, 10)}...`
+      );
+
+      addLog("Revocation proposal created. Check the Queue to sign and execute.", "success");
+      setActiveTab('queue');
+    } catch (e: any) {
+      addLog(`Revocation failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // --- MULTI-SIG LOGIC ---
 
   const getSafeTxHash = async (to: string, val: bigint, data: Hex, operation: 0 | 1, nonceOffset = 0) => {
@@ -1572,6 +1612,16 @@ const App: React.FC = () => {
                         <button className="action-btn" onClick={handleExecuteSchedule} disabled={loading || !isSessionEnabledOnChain}>
                           Execute Now
                         </button>
+                        {isSessionEnabledOnChain && (
+                          <button
+                            className="action-btn"
+                            style={{ background: '#ef4444' }}
+                            onClick={handleRevokeSessionOnChain}
+                            disabled={loading || !isCurrentSafeOwner}
+                          >
+                            Revoke On-Chain
+                          </button>
+                        )}
                         <button className="action-btn secondary" onClick={() => fetchData(selectedNestedSafeAddr)} disabled={loading}>
                           Check Status
                         </button>
