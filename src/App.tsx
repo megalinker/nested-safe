@@ -28,7 +28,7 @@ import Safe, { type PasskeyArgType } from "@safe-global/protocol-kit";
 import { connectPhantom } from "./utils/phantom";
 import "./App.css";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { createSessionStruct } from "./utils/smartSessions";
+import { createAllowanceSessionStruct, createSessionStruct, USDC_ADDRESS } from "./utils/smartSessions";
 import { getPermissionId, getSafe7579SessionAccount } from "./utils/safe7579";
 import { createPasskey, loadPasskeys, storePasskey } from "./utils/passkeys";
 import { executePasskeyTransaction, getSafeInfo } from "./utils/safePasskeyClient";
@@ -56,7 +56,6 @@ const PIMLICO_API_KEY = import.meta.env.VITE_PIMLICO_API_KEY;
 const PIMLICO_URL = `https://api.pimlico.io/v2/base-sepolia/rpc?apikey=${PIMLICO_API_KEY}`;
 const PUBLIC_RPC = "https://sepolia.base.org";
 const SAFE_TX_SERVICE_URL = "https://safe-transaction-base-sepolia.safe.global/api/v1";
-const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
 // --- RHINESTONE ADDRESSES ---
 const SAFE_7579_ADAPTER_ADDRESS = "0x7579f2AD53b01c3D8779Fe17928e0D48885B0003";
@@ -274,7 +273,7 @@ const App: React.FC = () => {
   const [selectedSafeAddr, setSelectedSafeAddr] = useState<string>("");
   const [selectedNestedSafeAddr, setSelectedNestedSafeAddr] = useState<string>("");
 
-  const [activeTab, setActiveTab] = useState<'transfer' | 'scheduled' | 'owners' | 'queue' | 'history' | 'settings'>('transfer');
+  const [activeTab, setActiveTab] = useState<'transfer' | 'scheduled' | 'allowances' | 'owners' | 'queue' | 'history' | 'settings'>('transfer');
 
   // Token Selection State
   const [selectedToken, setSelectedToken] = useState<'ETH' | 'USDC'>('ETH');
@@ -303,6 +302,15 @@ const App: React.FC = () => {
   const [sendAmount, setSendAmount] = useState("");
   const [newOwnerInput, setNewOwnerInput] = useState("");
   const [newThresholdInput, setNewThresholdInput] = useState<number>(1);
+
+  // Allowances State
+  const [allowanceAmount, setAllowanceAmount] = useState("");
+  const [allowanceUsage, setAllowanceUsage] = useState("1");
+  const [allowanceStart, setAllowanceStart] = useState("");
+  const [myAllowances, setMyAllowances] = useState<any[]>([]);
+
+  const [signerMode, setSignerMode] = useState<'main' | 'session'>('main');
+  const [activeSession, setActiveSession] = useState<any | null>(null);
 
   // Scheduled Transfer State
   const [scheduleRecipient, setScheduleRecipient] = useState("");
@@ -370,6 +378,11 @@ const App: React.FC = () => {
       }
     }
   }, [selectedNestedSafeAddr]);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("my_allowances");
+    if (stored) setMyAllowances(JSON.parse(stored));
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'history' && selectedNestedSafeAddr) {
@@ -954,6 +967,139 @@ const App: React.FC = () => {
     }
   };
 
+  const handleCreateAllowance = async () => {
+    if (!allowanceAmount || !allowanceStart || !selectedNestedSafeAddr) {
+      addLog("Please fill in amount and start date", "error");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      // 1. Setup Ephemeral Signer
+      const pk = generatePrivateKey();
+      const sessionOwner = privateKeyToAccount(pk);
+      const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
+      const startUnix = Math.floor(new Date(allowanceStart).getTime() / 1000);
+      const usageCount = allowanceUsage ? parseInt(allowanceUsage) : 10;
+
+      // 2. Format Token Details
+      const isNative = selectedToken === 'ETH';
+      const amountRaw = isNative
+        ? parseEther(allowanceAmount)
+        : parseUnits(allowanceAmount, 6);
+      const tokenAddr = isNative
+        ? "0x0000000000000000000000000000000000000000" as Address
+        : USDC_ADDRESS as Address;
+
+      // 3. CREATE THE STRUCT USING THE HELPER
+      const session = createAllowanceSessionStruct(
+        sessionOwner.address,
+        tokenAddr,
+        amountRaw,
+        usageCount,
+        startUnix,
+        salt
+      );
+
+      // 4. Propose to Queue
+      const data = encodeFunctionData({
+        abi: ENABLE_SESSIONS_ABI,
+        functionName: "enableSessions",
+        args: [[session]]
+      });
+
+      const permissionId = getPermissionId(session);
+
+      await proposeTransaction(
+        SMART_SESSIONS_VALIDATOR_ADDRESS,
+        0n,
+        data,
+        `Enable ${allowanceAmount} ${selectedToken} Allowance (Limit: ${usageCount} Tx)`
+      );
+
+      // 5. Store Metadata Locally
+      const newAllowance = {
+        permissionId,
+        privateKey: pk,
+        amount: allowanceAmount,
+        token: selectedToken,
+        usage: usageCount,
+        start: allowanceStart,
+        session
+      };
+
+      const updated = [...myAllowances, newAllowance];
+      setMyAllowances(updated);
+      localStorage.setItem("my_allowances", JSON.stringify(updated));
+
+      addLog("Allowance proposed to Queue!", "success");
+      setActiveTab('queue');
+
+    } catch (e: any) {
+      addLog(`Creation failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSessionSpend = async () => {
+    if (!activeSession || !recipient || !sendAmount) return;
+    setLoading(true);
+
+    try {
+      const { privateKey, session, token } = activeSession;
+      const sessionOwner = privateKeyToAccount(privateKey);
+
+      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
+
+      // 1. Get the Session Smart Account
+      const safeAccount = await getSafe7579SessionAccount(
+        publicClient,
+        selectedNestedSafeAddr as Hex,
+        session,
+        async (hash) => (sessionOwner as any).sign({ hash })
+      );
+
+      const smartClient = createSmartAccountClient({
+        account: safeAccount,
+        chain: baseSepolia,
+        bundlerTransport: http(PIMLICO_URL),
+        paymaster: pimlicoClient,
+        userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
+      });
+
+      // 2. Prepare Payload
+      let tx;
+      if (token === 'USDC') {
+        tx = {
+          to: USDC_ADDRESS as Address,
+          value: 0n,
+          data: encodeFunctionData({
+            abi: ERC20_ABI,
+            functionName: "transfer",
+            args: [recipient as Address, parseUnits(sendAmount, 6)]
+          })
+        };
+      } else {
+        tx = { to: recipient as Address, value: parseEther(sendAmount), data: "0x" as Hex };
+      }
+
+      addLog(`Spending ${sendAmount} ${token} via Session Key...`, "info");
+      const hash = await smartClient.sendTransaction(tx);
+      addLog(`Success! UserOp Hash: ${hash}`, "success");
+
+      // Optional: Refresh balance after spend
+      setTimeout(() => fetchData(selectedNestedSafeAddr), 5000);
+
+    } catch (e: any) {
+      addLog(`Spend failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // --- MULTI-SIG LOGIC ---
 
   const getSafeTxHash = async (to: string, val: bigint, data: Hex, operation: 0 | 1, nonceOffset = 0) => {
@@ -1441,7 +1587,35 @@ const App: React.FC = () => {
               </div>
 
               <hr style={{ width: '100%', borderColor: 'var(--border)', margin: '1.5rem 0' }} />
+              <div className="section-label">Active Signer Context</div>
+              <div style={{ marginBottom: '1.5rem', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <button
+                  className={`chip ${signerMode === 'main' ? 'active' : ''}`}
+                  style={{ justifyContent: 'center', width: '100%', borderColor: signerMode === 'main' ? 'var(--primary)' : 'var(--border)' }}
+                  onClick={() => { setSignerMode('main'); setActiveSession(null); }}
+                >
+                  🛡️ Main Account (Multisig)
+                </button>
 
+                {myAllowances.map((al, i) => (
+                  <button
+                    key={i}
+                    className={`chip ${activeSession?.permissionId === al.permissionId ? 'active' : ''}`}
+                    style={{
+                      justifyContent: 'center', width: '100%',
+                      borderColor: activeSession?.permissionId === al.permissionId ? 'var(--success)' : 'var(--border)',
+                      opacity: signerMode === 'session' && activeSession?.permissionId !== al.permissionId ? 0.5 : 1
+                    }}
+                    onClick={() => {
+                      setSignerMode('session');
+                      setActiveSession(al);
+                      addLog(`Signer switched to Allowance Key: ${al.permissionId.slice(0, 8)}`, 'info');
+                    }}
+                  >
+                    🔑 Key: {al.amount} {al.token} Limit
+                  </button>
+                ))}
+              </div>
               <div className="section-label">
                 <span>Managed Safes (Targets)</span>
                 <button className="icon-btn" onClick={createNestedSafe} title="Deploy New Nested Safe"><Icons.Plus /></button>
@@ -1475,13 +1649,12 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* RESET APP - Moved to bottom of sidebar */}
             <div style={{ marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
               <button
                 className="action-btn secondary small"
                 style={{ width: '100%', opacity: 0.6, fontSize: '0.75rem' }}
                 onClick={() => {
-                  if (window.confirm("This will clear all local safes and passkeys from this browser. Continue?")) {
+                  if (window.confirm("This will clear all local safes and passkeys. Continue?")) {
                     localStorage.clear();
                     window.location.reload();
                   }
@@ -1496,6 +1669,7 @@ const App: React.FC = () => {
             <div className="panel-header">
               <button className={`tab-btn ${activeTab === 'transfer' ? 'active' : ''}`} onClick={() => setActiveTab('transfer')}>Transfer</button>
               <button className={`tab-btn ${activeTab === 'scheduled' ? 'active' : ''}`} onClick={() => setActiveTab('scheduled')}>Scheduled</button>
+              <button className={`tab-btn ${activeTab === 'allowances' ? 'active' : ''}`} onClick={() => setActiveTab('allowances')}>Allowances</button>
               <button className={`tab-btn ${activeTab === 'owners' ? 'active' : ''}`} onClick={() => setActiveTab('owners')}>Owners</button>
               <button className={`tab-btn ${activeTab === 'queue' ? 'active' : ''}`} onClick={() => setActiveTab('queue')}>
                 Queue {currentSafeQueue.filter(t => t.nonce >= nestedNonce).length > 0 && <span className="header-badge" style={{ background: 'var(--primary)', border: 'none', marginLeft: '6px' }}>{currentSafeQueue.filter(t => t.nonce >= nestedNonce).length}</span>}
@@ -1513,28 +1687,89 @@ const App: React.FC = () => {
               {/* --- TRANSFER TAB --- */}
               {activeTab === 'transfer' && (
                 <>
-                  <div className="section-label">Make Transfer</div>
+                  <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>{signerMode === 'session' ? "Make Transfer (Session Mode)" : "Make Transfer"}</span>
+                    {signerMode === 'session' && (
+                      <span style={{ color: 'var(--success)', fontSize: '0.7rem', fontWeight: 'bold' }}>
+                        USING SESSION KEY
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Token Selector logic */}
                   <TokenSelector />
+
+                  {/* Warning if the selected token in UI doesn't match what the key is authorized for */}
+                  {signerMode === 'session' && selectedToken !== activeSession.token && (
+                    <div style={{
+                      background: 'rgba(239, 68, 68, 0.1)',
+                      color: '#f87171',
+                      padding: '10px',
+                      borderRadius: '8px',
+                      marginBottom: '15px',
+                      fontSize: '0.85rem',
+                      border: '1px solid rgba(239, 68, 68, 0.2)'
+                    }}>
+                      ⚠️ This session key is authorized for <strong>{activeSession.token}</strong>,
+                      but you have <strong>{selectedToken}</strong> selected.
+                    </div>
+                  )}
+
                   <div className="input-group">
                     <label>Recipient Address</label>
                     <input placeholder="0x..." value={recipient} onChange={e => setRecipient(e.target.value)} />
                   </div>
+
                   <div className="input-group">
                     <label>Amount ({selectedToken})</label>
                     <input type="number" placeholder="0.0" value={sendAmount} onChange={e => setSendAmount(e.target.value)} />
                   </div>
-                  <button className="action-btn" onClick={() => {
-                    if (!sendAmount || !recipient) return;
-                    if (selectedToken === 'ETH') {
-                      proposeTransaction(recipient, parseEther(sendAmount), "0x", `Transfer ${sendAmount} ETH`);
-                    } else {
-                      const amount = parseUnits(sendAmount, 6);
-                      const data = encodeFunctionData({ abi: ERC20_ABI, functionName: "transfer", args: [recipient as Address, amount] });
-                      proposeTransaction(USDC_ADDRESS, 0n, data, `Transfer ${sendAmount} USDC`);
+
+                  <button
+                    className="action-btn"
+                    style={{
+                      background: signerMode === 'session' ? 'var(--success)' : 'var(--primary)',
+                      boxShadow: signerMode === 'session' ? '0 0 20px rgba(16, 185, 129, 0.2)' : 'none'
+                    }}
+                    onClick={() => {
+                      if (!sendAmount || !recipient) return;
+
+                      if (signerMode === 'session') {
+                        // --- SESSION EXECUTION ---
+                        if (selectedToken !== activeSession.token) {
+                          addLog(`Cannot spend ${selectedToken}: Key is only for ${activeSession.token}`, 'error');
+                          return;
+                        }
+                        handleSessionSpend(); // This is the new direct-execution function
+                      } else {
+                        // --- MULTISIG PROPOSAL ---
+                        if (selectedToken === 'ETH') {
+                          proposeTransaction(recipient, parseEther(sendAmount), "0x", `Transfer ${sendAmount} ETH`);
+                        } else {
+                          const amount = parseUnits(sendAmount, 6);
+                          const data = encodeFunctionData({ abi: ERC20_ABI, functionName: "transfer", args: [recipient as Address, amount] });
+                          proposeTransaction(USDC_ADDRESS, 0n, data, `Transfer ${sendAmount} USDC`);
+                        }
+                      }
+                    }}
+                    disabled={loading || (signerMode === 'main' && !isCurrentSafeOwner)}
+                  >
+                    {signerMode === 'session'
+                      ? `Spend via Allowance (${activeSession.token})`
+                      : nestedThreshold > 1
+                        ? `Create Proposal (${nestedThreshold} sigs needed)`
+                        : "Execute Transaction"
                     }
-                  }} disabled={loading || !isCurrentSafeOwner}>
-                    {nestedThreshold > 1 ? `Create Proposal (${nestedThreshold} sigs needed)` : "Execute Transaction"}
                   </button>
+
+                  {signerMode === 'session' && (
+                    <div style={{ marginTop: '15px', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      <strong>Current Session Limits:</strong><br />
+                      • Max Spend: {activeSession.amount} {activeSession.token}<br />
+                      • Max Txs: {activeSession.usage}<br />
+                      • Permission ID: <span style={{ fontFamily: 'monospace' }}>{activeSession.permissionId.slice(0, 16)}...</span>
+                    </div>
+                  )}
                 </>
               )}
 
@@ -1543,8 +1778,7 @@ const App: React.FC = () => {
                 <div>
                   <div className="section-label">Scheduled Transfer (Smart Session)</div>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                    Create a session key to execute a transfer later without requiring owner signatures.
-                    The first time you do this, we'll automatically bundle the 7579 module installation.
+                    Create a one-time session key that activates at a specific time.
                   </p>
 
                   {!hasStoredSchedule ? (
@@ -1561,26 +1795,10 @@ const App: React.FC = () => {
                           <input type="number" placeholder="0.0" value={scheduleAmount} onChange={e => setScheduleAmount(e.target.value)} />
                         </div>
                         <div className="input-group">
-                          <label>Earliest Start Time (Local)</label>
-                          <input
-                            type="datetime-local"
-                            value={scheduleDate}
-                            onChange={e => setScheduleDate(e.target.value)}
-                            style={{ colorScheme: 'dark' }}
-                          />
+                          <label>Activation Time (Local)</label>
+                          <input type="datetime-local" value={scheduleDate} onChange={e => setScheduleDate(e.target.value)} style={{ colorScheme: 'dark' }} />
                         </div>
                       </div>
-
-                      {timePreviews && (
-                        <div style={{ background: 'rgba(99, 102, 241, 0.05)', padding: '12px', borderRadius: '8px', border: '1px solid var(--primary-glow)', fontSize: '0.8rem' }}>
-                          <div style={{ color: 'var(--primary)', fontWeight: 'bold', marginBottom: '5px' }}>Execution Thresholds:</div>
-                          <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr', gap: '4px' }}>
-                            <span style={{ color: 'var(--text-secondary)' }}>Local:</span> <span>{timePreviews.local}</span>
-                            <span style={{ color: 'var(--text-secondary)' }}>UTC:</span> <span>{timePreviews.utc}</span>
-                            <span style={{ color: 'var(--text-secondary)' }}>EST:</span> <span>{timePreviews.est}</span>
-                          </div>
-                        </div>
-                      )}
 
                       <button className="action-btn" onClick={handleCreateSchedule} disabled={loading || !isCurrentSafeOwner || !scheduleDate}>
                         Create Schedule Proposal
@@ -1593,32 +1811,20 @@ const App: React.FC = () => {
                           {isSessionEnabledOnChain ? <Icons.Check /> : <Icons.Refresh />}
                         </div>
                         <h3 style={{ margin: 0, fontSize: '1rem' }}>
-                          {isSessionEnabledOnChain ? "Transfer Ready" : "Session Pending Execution"}
+                          {isSessionEnabledOnChain ? "Session Key Active" : "Waiting for Setup Approval"}
                         </h3>
                       </div>
                       <div style={{ fontSize: '0.9rem', marginBottom: '1rem' }}>
-                        <div><strong>Asset:</strong> {JSON.parse(localStorage.getItem("scheduled_session") || "{}").token || 'ETH'}</div>
-                        <div><strong>Target:</strong> {scheduledInfo?.target}</div>
-                        <div><strong>Amount:</strong> {scheduledInfo?.amount}</div>
-                        <div style={{ marginTop: '10px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
-                          {isSessionEnabledOnChain
-                            ? "Key is active. You can now execute this transfer using only the ephemeral session key."
-                            : "The proposal to enable this session is in the Queue. Once executed, you can send this transfer."
-                          }
-                        </div>
+                        <div><strong>Recipient:</strong> {scheduledInfo?.target}</div>
+                        <div><strong>Amount:</strong> {scheduledInfo?.amount} {JSON.parse(localStorage.getItem("scheduled_session") || "{}").token}</div>
                       </div>
 
-                      <div style={{ display: 'flex', gap: '10px' }}>
+                      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                         <button className="action-btn" onClick={handleExecuteSchedule} disabled={loading || !isSessionEnabledOnChain}>
                           Execute Now
                         </button>
                         {isSessionEnabledOnChain && (
-                          <button
-                            className="action-btn"
-                            style={{ background: '#ef4444' }}
-                            onClick={handleRevokeSessionOnChain}
-                            disabled={loading || !isCurrentSafeOwner}
-                          >
+                          <button className="action-btn" style={{ background: '#ef4444' }} onClick={handleRevokeSessionOnChain} disabled={loading || !isCurrentSafeOwner}>
                             Revoke On-Chain
                           </button>
                         )}
@@ -1626,11 +1832,64 @@ const App: React.FC = () => {
                           Check Status
                         </button>
                         <button className="action-btn secondary" onClick={handleClearSchedule} disabled={loading}>
-                          Cancel
+                          Clear Local Data
                         </button>
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* --- ALLOWANCES TAB --- */}
+              {activeTab === 'allowances' && (
+                <div>
+                  <div className="section-label">Smart Allowances (Spending + Usage Limits)</div>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
+                    Grant restricted access to your Safe. Use <strong>ValueLimitPolicy</strong> for ETH and <strong>ERC20SpendingLimitPolicy</strong> for USDC.
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    <TokenSelector />
+
+                    <div className="input-group">
+                      <label>Total Spending Allowance ({selectedToken})</label>
+                      <input type="number" value={allowanceAmount} onChange={e => setAllowanceAmount(e.target.value)} placeholder="0.0" />
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                      <div className="input-group">
+                        <label>Max Transactions (Usage Limit)</label>
+                        <input type="number" value={allowanceUsage} onChange={e => setAllowanceUsage(e.target.value)} placeholder="e.g. 5" />
+                      </div>
+                      <div className="input-group">
+                        <label>Key Active From</label>
+                        <input type="datetime-local" value={allowanceStart} onChange={e => setAllowanceStart(e.target.value)} style={{ colorScheme: 'dark' }} />
+                      </div>
+                    </div>
+
+                    <button className="action-btn" onClick={handleCreateAllowance} disabled={loading || !isCurrentSafeOwner || !allowanceStart || !allowanceAmount}>
+                      Propose Allowance Key
+                    </button>
+                  </div>
+
+                  <div className="section-label" style={{ marginTop: '2.5rem' }}>Locally Stored Allowance Keys</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {myAllowances.length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>No active allowance keys.</div>
+                    ) : (
+                      myAllowances.map((al, i) => (
+                        <div key={i} className="owner-row" style={{ borderLeft: '3px solid var(--primary)' }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: '600' }}>{al.amount} {al.token} Total Cap</div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                              Usage: Max {al.usage || 'N/A'} Tx | ID: {al.permissionId.slice(0, 14)}...
+                            </div>
+                          </div>
+                          <button className="action-btn secondary small" onClick={() => addLog("To spend: Select this key as signer and use Transfer tab.", "info")}>Spend</button>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -1687,12 +1946,6 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   ))}
-                  <div className="section-label" style={{ marginTop: '2rem' }}>Quick Add My Safes</div>
-                  <div className="quick-add-container">
-                    {mySafes.filter(s => !nestedOwners.some(o => o.toLowerCase() === s.address.toLowerCase())).map(s => (
-                      <button key={s.address} className="chip" onClick={() => setNewOwnerInput(s.address)}><Icons.Plus /> {s.name}</button>
-                    ))}
-                  </div>
                   <div className="input-group" style={{ marginTop: '1rem' }}>
                     <label>Add External Owner Address</label>
                     <div style={{ display: 'flex', gap: '10px' }}>
@@ -1730,12 +1983,8 @@ const App: React.FC = () => {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       {txHistory.map((tx, i) => {
                         const isIncoming = tx.txType === 'ETHEREUM_TRANSACTION';
-                        let valueBigInt = BigInt(tx.value || 0);
-                        if (isIncoming && tx.transfers) {
-                          const seen = new Set();
-                          tx.transfers.forEach(t => { if (t.type === 'ETHER_TRANSFER') { const key = `${t.value}-${t.from}-${t.to}`; if (!seen.has(key)) { valueBigInt += BigInt(t.value); seen.add(key); } } });
-                        }
-                        if (isIncoming && valueBigInt === 0n) return null;
+                        const val = formatEther(BigInt(tx.value || 0));
+                        if (isIncoming && val === "0") return null;
                         return (
                           <div key={i} className="owner-row" style={{ borderLeft: isIncoming ? '4px solid var(--success)' : '4px solid var(--primary)', padding: '12px' }}>
                             <div>
@@ -1743,7 +1992,7 @@ const App: React.FC = () => {
                               <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{new Date(tx.executionDate).toLocaleDateString()}</div>
                             </div>
                             <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontWeight: '600' }}>{formatEther(valueBigInt)} ETH</div>
+                              <div style={{ fontWeight: '600' }}>{val} ETH</div>
                               {tx.transactionHash && <a href={`https://sepolia.basescan.org/tx/${tx.transactionHash}`} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: 'var(--primary)', textDecoration: 'none' }}>Explorer <Icons.ExternalLink /></a>}
                             </div>
                           </div>
