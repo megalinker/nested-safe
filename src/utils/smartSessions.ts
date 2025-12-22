@@ -84,64 +84,37 @@ export const createAllowanceSessionStruct = (
     sessionOwner: Address,
     tokenAddress: Address,
     amount: bigint,
-    usageLimit: number,
+    // usageLimit removed (Budgets are usually unlimited usage, constrained by time)
     startUnix: number,
     salt: Hex,
-    refillInterval: number = 0 // New Parameter (0 = one-time total limit)
+    refillInterval: number
 ) => {
-    const isNative = tokenAddress === "0x0000000000000000000000000000000000000000";
+    // 1. Safety Check: We only deployed the Periodic Policy for ERC20s (USDC)
+    // If you try to do this with Native ETH, it will fail because the contract expects `transfer(to, amount)`
+    if (tokenAddress === "0x0000000000000000000000000000000000000000") {
+        throw new Error("Recurring Allowances currently only support ERC20 tokens (USDC), not Native ETH.");
+    }
+
+    if (refillInterval <= 0) {
+        throw new Error("Interval must be greater than 0 for recurring allowances.");
+    }
+
     const policies = [];
 
-    // 1. Add Spending Policy
-    if (refillInterval > 0) {
-        // --- PERIODIC / RECURRING ALLOWANCE ---
-        if (isNative) {
-            // Note: Implementing periodic native ETH policy requires a separate contract 
-            // similar to the PeriodicERC20Policy but for ValueLimit. 
-            // For now, we fallback to static if native, or throw error.
-            console.warn("Periodic ETH limit not implemented in this demo, falling back to static.");
-            policies.push({
-                policy: VALUE_LIMIT_POLICY as Address,
-                initData: encodeAbiParameters([{ type: 'uint256' }], [amount])
-            });
-        } else {
-            // Use the PeriodicERC20Policy
-            policies.push({
-                policy: PERIODIC_ERC20_POLICY as Address,
-                initData: encodeAbiParameters(
-                    [{ type: 'address[]' }, { type: 'uint256[]' }, { type: 'uint256[]' }],
-                    [[tokenAddress], [amount], [BigInt(refillInterval)]]
-                )
-            });
-        }
-    } else {
-        // --- ONE-TIME / TOTAL ALLOWANCE (Existing Logic) ---
-        if (isNative) {
-            policies.push({
-                policy: VALUE_LIMIT_POLICY as Address,
-                initData: encodeAbiParameters([{ type: 'uint256' }], [amount])
-            });
-        } else {
-            policies.push({
-                policy: ERC20_SPENDING_LIMIT_POLICY as Address,
-                initData: encodeAbiParameters(
-                    [{ type: 'address[]' }, { type: 'uint256[]' }],
-                    [[tokenAddress], [amount]]
-                )
-            });
-        }
-    }
+    // 2. Add The Periodic Policy
+    policies.push({
+        policy: PERIODIC_ERC20_POLICY as Address,
+        initData: encodeAbiParameters(
+            [{ type: 'address[]' }, { type: 'uint256[]' }, { type: 'uint256[]' }],
+            [[tokenAddress], [amount], [BigInt(refillInterval)]]
+        )
+    });
 
-    // 2. Add Usage Limit (Max transaction count) if defined
-    // If it's periodic, we usually allow unlimited usage count (0), or a high number
-    // because the limit is controlled by time.
-    if (usageLimit > 0) {
-        policies.push({
-            policy: USAGE_LIMIT_POLICY as Address,
-            initData: encodePacked(['uint128'], [BigInt(usageLimit)])
-        });
-    }
+    // 3. Add Usage Limit (Optional: defaulting to 0/unlimited for budgets is standard)
+    // We add a massive limit (e.g., 1 million txs) just to be safe, or we can omit it entirely.
+    // Let's omit it to save gas, effectively making it unlimited.
 
+    // Sort policies (Required by 7579)
     const sortedActionPolicies = policies.sort((a, b) => a.policy.toLowerCase().localeCompare(b.policy.toLowerCase()));
 
     return {
@@ -157,8 +130,8 @@ export const createAllowanceSessionStruct = (
         ].sort((a, b) => a.policy.toLowerCase().localeCompare(b.policy.toLowerCase())),
         erc7739Policies: { allowedERC7739Content: [], erc1271Policies: [] },
         actions: [{
-            actionTarget: isNative ? "0x0000000000000000000000000000000000000000" : tokenAddress,
-            actionTargetSelector: isNative ? "0xFFFFFFFF" : "0xa9059cbb" as Hex,
+            actionTarget: tokenAddress,
+            actionTargetSelector: "0xa9059cbb" as Hex, // ERC20 transfer
             actionPolicies: sortedActionPolicies
         }],
         permitERC4337Paymaster: true

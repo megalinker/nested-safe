@@ -328,9 +328,7 @@ const App: React.FC = () => {
 
   // Allowances State
   const [allowanceAmount, setAllowanceAmount] = useState("");
-  const [allowanceUsage, setAllowanceUsage] = useState("1");
   const [allowanceStart, setAllowanceStart] = useState("");
-  const [allowanceType, setAllowanceType] = useState<'onetime' | 'recurring'>('onetime');
   const [allowanceInterval, setAllowanceInterval] = useState<string>("1");
   const [allowanceUnit, setAllowanceUnit] = useState<'minutes' | 'hours' | 'days'>('minutes');
   const [myAllowances, setMyAllowances] = useState<any[]>([]);
@@ -993,52 +991,40 @@ const App: React.FC = () => {
       return;
     }
 
+    if (selectedToken === 'ETH') {
+      addLog("Recurring allowances only support USDC in this demo.", "error");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      // 1. Setup Ephemeral Signer
       const pk = generatePrivateKey();
       const sessionOwner = privateKeyToAccount(pk);
       const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
       const startUnix = Math.floor(new Date(allowanceStart).getTime() / 1000);
 
-      // Handle Usage Limit: If recurring, default to 0 (unlimited), else use input
-      const usageCount = allowanceType === 'recurring'
-        ? 0
-        : (allowanceUsage ? parseInt(allowanceUsage) : 1);
+      // Always Recurring
+      const val = parseInt(allowanceInterval);
+      if (isNaN(val) || val <= 0) throw new Error("Invalid interval");
 
-      // Handle Recurring Logic
       let refillSeconds = 0;
-      if (allowanceType === 'recurring') {
-        const val = parseInt(allowanceInterval);
-        if (isNaN(val) || val <= 0) throw new Error("Invalid interval");
+      if (allowanceUnit === 'minutes') refillSeconds = val * 60;
+      if (allowanceUnit === 'hours') refillSeconds = val * 3600;
+      if (allowanceUnit === 'days') refillSeconds = val * 86400;
 
-        if (allowanceUnit === 'minutes') refillSeconds = val * 60;
-        if (allowanceUnit === 'hours') refillSeconds = val * 3600;
-        if (allowanceUnit === 'days') refillSeconds = val * 86400;
-      }
+      const amountRaw = parseUnits(allowanceAmount, 6); // Assuming USDC
+      const tokenAddr = USDC_ADDRESS as Address;
 
-      // 2. Format Token Details
-      const isNative = selectedToken === 'ETH';
-      const amountRaw = isNative
-        ? parseEther(allowanceAmount)
-        : parseUnits(allowanceAmount, 6);
-      const tokenAddr = isNative
-        ? "0x0000000000000000000000000000000000000000" as Address
-        : USDC_ADDRESS as Address;
-
-      // 3. CREATE THE STRUCT USING THE HELPER
       const session = createAllowanceSessionStruct(
         sessionOwner.address,
         tokenAddr,
         amountRaw,
-        usageCount,
         startUnix,
         salt,
-        refillSeconds // Pass the interval
+        refillSeconds
       );
 
-      // 4. Propose to Queue
       const data = encodeFunctionData({
         abi: ENABLE_SESSIONS_ABI,
         functionName: "enableSessions",
@@ -1047,35 +1033,29 @@ const App: React.FC = () => {
 
       const permissionId = getPermissionId(session);
 
-      const desc = refillSeconds > 0
-        ? `Enable ${allowanceAmount} ${selectedToken} every ${allowanceInterval} ${allowanceUnit}`
-        : `Enable ${allowanceAmount} ${selectedToken} Allowance (Limit: ${usageCount} Tx)`;
-
       await proposeTransaction(
         SMART_SESSIONS_VALIDATOR_ADDRESS,
         0n,
         data,
-        desc
+        `Enable ${allowanceAmount} ${selectedToken} every ${allowanceInterval} ${allowanceUnit}`
       );
 
-      // 5. Store Metadata Locally
       const newAllowance = {
         permissionId,
         privateKey: pk,
         amount: allowanceAmount,
         token: selectedToken,
-        usage: usageCount,
         start: allowanceStart,
         session,
-        type: allowanceType,
-        interval: allowanceType === 'recurring' ? `${allowanceInterval} ${allowanceUnit}` : null
+        type: 'recurring',
+        interval: `${allowanceInterval} ${allowanceUnit}`
       };
 
       const updated = [...myAllowances, newAllowance];
       setMyAllowances(updated);
       localStorage.setItem("my_allowances", JSON.stringify(updated));
 
-      addLog("Allowance proposed to Queue!", "success");
+      addLog("Recurring Budget proposed!", "success");
       setActiveTab('queue');
 
     } catch (e: any) {
@@ -1969,137 +1949,92 @@ const App: React.FC = () => {
               {/* --- ALLOWANCES TAB --- */}
               {activeTab === 'allowances' && (
                 <div>
-                  <div className="section-label">Smart Allowances</div>
+                  <div className="section-label">Recurring Budgets</div>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                    Grant restricted access to your Safe. Supports one-time caps or recurring budgets.
+                    Create a standing allowance that resets automatically over time.
                   </p>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                     <TokenSelector />
-
-                    {/* Allowance Type Switcher */}
-                    <div className="input-group">
-                      <label>Allowance Type</label>
-                      <div style={{ display: 'flex', gap: '10px' }}>
-                        <button
-                          className={`chip ${allowanceType === 'onetime' ? 'active' : ''}`}
-                          style={{
-                            flex: 1, justifyContent: 'center', padding: '10px',
-                            borderColor: allowanceType === 'onetime' ? 'var(--primary)' : 'var(--border)'
-                          }}
-                          onClick={() => {
-                            setAllowanceType('onetime');
-                            setAllowanceUsage("1"); // Reset to default
-                          }}
-                        >
-                          One-Time Cap
-                        </button>
-                        <button
-                          className={`chip ${allowanceType === 'recurring' ? 'active' : ''}`}
-                          style={{
-                            flex: 1, justifyContent: 'center', padding: '10px',
-                            borderColor: allowanceType === 'recurring' ? 'var(--primary)' : 'var(--border)'
-                          }}
-                          onClick={() => {
-                            setAllowanceType('recurring');
-                            setAllowanceUsage(""); // Clear usage input
-                          }}
-                        >
-                          Recurring (Budget)
-                        </button>
-                      </div>
-                    </div>
 
                     <div className="input-group">
                       <label>Spending Amount ({selectedToken})</label>
                       <input type="number" value={allowanceAmount} onChange={e => setAllowanceAmount(e.target.value)} placeholder="0.0" />
                     </div>
 
-                    {/* Recurring Inputs */}
-                    {allowanceType === 'recurring' && (
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-                        <div className="input-group">
-                          <label>Reset Every</label>
-                          <input type="number" value={allowanceInterval} onChange={e => setAllowanceInterval(e.target.value)} />
-                        </div>
-                        <div className="input-group">
-                          <label>Unit</label>
-                          <select
-                            value={allowanceUnit}
-                            onChange={e => setAllowanceUnit(e.target.value as any)}
-                            style={{
-                              width: '100%', background: 'var(--bg-dark)', border: '1px solid var(--border)',
-                              color: 'white', padding: '10px', borderRadius: '8px', fontFamily: 'JetBrains Mono'
-                            }}
-                          >
-                            <option value="minutes">Minutes</option>
-                            <option value="hours">Hours</option>
-                            <option value="days">Days</option>
-                          </select>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* One-Time Inputs */}
-                    {allowanceType === 'onetime' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
                       <div className="input-group">
-                        <label>Max Transactions (Usage Limit)</label>
-                        <input type="number" value={allowanceUsage} onChange={e => setAllowanceUsage(e.target.value)} placeholder="e.g. 5" />
+                        <label>Reset Every</label>
+                        <input type="number" value={allowanceInterval} onChange={e => setAllowanceInterval(e.target.value)} />
                       </div>
-                    )}
+                      <div className="input-group">
+                        <label>Unit</label>
+                        <select
+                          value={allowanceUnit}
+                          onChange={e => setAllowanceUnit(e.target.value as any)}
+                          style={{
+                            width: '100%', background: 'var(--bg-dark)', border: '1px solid var(--border)',
+                            color: 'white', padding: '10px', borderRadius: '8px', fontFamily: 'JetBrains Mono'
+                          }}
+                        >
+                          <option value="minutes">Minutes</option>
+                          <option value="hours">Hours</option>
+                          <option value="days">Days</option>
+                        </select>
+                      </div>
+                    </div>
 
                     <div className="input-group">
-                      <label>Key Active From</label>
+                      <label>Valid From</label>
                       <input type="datetime-local" value={allowanceStart} onChange={e => setAllowanceStart(e.target.value)} style={{ colorScheme: 'dark' }} />
                     </div>
 
-                    <button className="action-btn" onClick={handleCreateAllowance} disabled={loading || !isCurrentSafeOwner || !allowanceStart || !allowanceAmount}>
-                      {allowanceType === 'recurring'
-                        ? `Propose Recurring Budget`
-                        : `Propose Allowance Key`
-                      }
+                    {selectedToken === 'ETH' && (
+                      <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', borderRadius: '8px', fontSize: '0.8rem' }}>
+                        ⚠️ Recurring allowances currently only support USDC.
+                      </div>
+                    )}
+
+                    <button className="action-btn" onClick={handleCreateAllowance} disabled={loading || !isCurrentSafeOwner || !allowanceStart || !allowanceAmount || selectedToken === 'ETH'}>
+                      Propose Budget
                     </button>
                   </div>
 
-                  <div className="section-label" style={{ marginTop: '2.5rem' }}>Locally Stored Allowance Keys</div>
+                  <div className="section-label" style={{ marginTop: '2.5rem' }}>Active Budgets</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {myAllowances.length === 0 ? (
-                      <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>No active allowance keys.</div>
+                      <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>No active budgets.</div>
                     ) : (
                       myAllowances.map((al, i) => (
                         <div key={i} className="owner-row" style={{ borderLeft: '3px solid var(--primary)' }}>
                           <div style={{ flex: 1 }}>
                             <div style={{ fontWeight: '600' }}>
                               {al.amount} {al.token}
-                              {al.type === 'recurring' ? <span style={{ fontSize: '0.75rem', color: 'var(--success)', marginLeft: '6px' }}>(Resets every {al.interval})</span> : ' Total Cap'}
+                              <span style={{ fontSize: '0.75rem', color: 'var(--success)', marginLeft: '6px' }}>(Resets every {al.interval})</span>
                             </div>
                             <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                              Usage: {al.usage > 0 ? `Max ${al.usage} Tx` : 'Unlimited'} | ID: {al.permissionId.slice(0, 14)}...
+                              ID: {al.permissionId.slice(0, 14)}...
                             </div>
                           </div>
 
-                          {/* --- ACTION BUTTONS --- */}
                           <div style={{ display: 'flex', gap: '8px' }}>
                             <button
                               className="action-btn secondary small"
                               onClick={() => {
                                 setSignerMode('session');
                                 setActiveSession(al);
-                                setActiveTab('transfer'); // Jump to transfer tab for UX
+                                setActiveTab('transfer');
                                 addLog(`Selected Key: ${al.permissionId.slice(0, 8)}...`, "info");
                               }}
                             >
                               Use Key
                             </button>
-
                             <button
                               className="icon-btn"
                               style={{ color: '#ef4444', borderColor: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px' }}
                               onClick={() => handleRevokeAllowance(al)}
-                              title="Revoke On-Chain"
                               disabled={loading || !isCurrentSafeOwner}
                             >
-                              {/* Simple Trash Icon */}
                               <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>
                             </button>
                           </div>
