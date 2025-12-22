@@ -1048,13 +1048,12 @@ const App: React.FC = () => {
     setLoading(true);
 
     try {
-      const { privateKey, session, token } = activeSession;
+      const { privateKey, session, token, permissionId } = activeSession;
       const sessionOwner = privateKeyToAccount(privateKey);
 
       const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
       const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
-      // 1. Get the Session Smart Account
       const safeAccount = await getSafe7579SessionAccount(
         publicClient,
         selectedNestedSafeAddr as Hex,
@@ -1070,7 +1069,6 @@ const App: React.FC = () => {
         userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
       });
 
-      // 2. Prepare Payload
       let tx;
       if (token === 'USDC') {
         tx = {
@@ -1090,8 +1088,31 @@ const App: React.FC = () => {
       const hash = await smartClient.sendTransaction(tx);
       addLog(`Success! UserOp Hash: ${hash}`, "success");
 
-      // Optional: Refresh balance after spend
-      setTimeout(() => fetchData(selectedNestedSafeAddr), 5000);
+      // --- FIX STARTS HERE: Post-Spend Cleanup ---
+
+      // 1. Immediately switch the UI back to the Main Account signer
+      setSignerMode('main');
+      setActiveSession(null);
+
+      // 2. Update the local allowance list (Decrement usage or remove)
+      const updatedAllowances = myAllowances.map(al => {
+        if (al.permissionId === permissionId) {
+          const currentUsage = parseInt(al.usage || "1");
+          return { ...al, usage: (currentUsage - 1).toString() };
+        }
+        return al;
+      }).filter(al => parseInt(al.usage) > 0); // Remove if no usage left
+
+      // 3. Save updated list to state and storage
+      setMyAllowances(updatedAllowances);
+      localStorage.setItem("my_allowances", JSON.stringify(updatedAllowances));
+
+      addLog(updatedAllowances.find(a => a.permissionId === permissionId)
+        ? "Allowance updated (Usage count reduced)."
+        : "One-use key consumed and removed from sidebar.", "info");
+
+      // 4. Refresh balances
+      setTimeout(() => fetchData(selectedNestedSafeAddr), 4000);
 
     } catch (e: any) {
       addLog(`Spend failed: ${e.message}`, "error");
@@ -1612,7 +1633,7 @@ const App: React.FC = () => {
                       addLog(`Signer switched to Allowance Key: ${al.permissionId.slice(0, 8)}`, 'info');
                     }}
                   >
-                    🔑 Key: {al.amount} {al.token} Limit
+                    🔑 Key: {al.amount} {al.token} ({al.usage} left)
                   </button>
                 ))}
               </div>
