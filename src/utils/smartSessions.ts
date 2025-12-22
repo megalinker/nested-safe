@@ -11,7 +11,10 @@ export const VALUE_LIMIT_POLICY = "0x730DA93267E7E513e932301B47F2ac7D062abC83";
 export const USAGE_LIMIT_POLICY = "0x1F34eF8311345A3A4a4566aF321b313052F51493";
 export const SUDO_POLICY = "0x0000003111cD8e92337C100F22B7A9dbf8DEE301";
 export const TIME_FRAME_POLICY = "0x8177451511dE0577b911C254E9551D981C26dc72";
-export const ERC20_SPENDING_LIMIT_POLICY = "0x00000088D48cF102A8Cdb0137A9b173f957c6343"; 
+export const ERC20_SPENDING_LIMIT_POLICY = "0x00000088D48cF102A8Cdb0137A9b173f957c6343";
+
+export const PERIODIC_ERC20_POLICY = "0x42e031a5efC778D3f90b3eB26F13d9784e55aA55";
+
 export const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
 export const encodePolicy = (type: 'value' | 'usage' | 'sudo' | 'time', limit?: bigint, validAfter?: number): { policy: Address; initData: Hex } => {
@@ -20,11 +23,6 @@ export const encodePolicy = (type: 'value' | 'usage' | 'sudo' | 'time', limit?: 
     if (type === 'usage') return { policy: USAGE_LIMIT_POLICY as Address, initData: encodePacked(['uint128'], [limit!]) };
 
     if (type === 'time') {
-        /**
-         * TimeFramePolicy.sol logic: 
-         * validUntil = uint48(uint128(bytes16(initData[0:16])))
-         * validAfter = uint48(uint128(bytes16(initData[16:32])))
-         */
         return {
             policy: TIME_FRAME_POLICY as Address,
             initData: encodePacked(
@@ -49,7 +47,7 @@ export const createSessionStruct = (
     selector: Hex,
     nativeValueLimit: bigint,
     salt: Hex,
-    validAfterUnix: number // Added timestamp
+    validAfterUnix: number
 ) => {
     const policiesList = [];
     policiesList.push(encodePolicy('usage', 1n));
@@ -57,10 +55,8 @@ export const createSessionStruct = (
         policiesList.push(encodePolicy('value', nativeValueLimit));
     }
 
-    // Sort action policies
     const policies = policiesList.sort((a, b) => a.policy.toLowerCase().localeCompare(b.policy.toLowerCase()));
 
-    // UserOp policies: Sudo + Time Frame restriction
     const userOpPolicies = [
         encodePolicy('sudo'),
         encodePolicy('time', 0n, validAfterUnix)
@@ -86,36 +82,65 @@ export const createSessionStruct = (
 
 export const createAllowanceSessionStruct = (
     sessionOwner: Address,
-    tokenAddress: Address, // Use address(0) for Native ETH
+    tokenAddress: Address,
     amount: bigint,
     usageLimit: number,
     startUnix: number,
-    salt: Hex
+    salt: Hex,
+    refillInterval: number = 0 // New Parameter (0 = one-time total limit)
 ) => {
     const isNative = tokenAddress === "0x0000000000000000000000000000000000000000";
     const policies = [];
 
-    // 1. Add the correct Value/Spending Policy
-    if (isNative) {
-        policies.push({
-            policy: VALUE_LIMIT_POLICY as Address,
-            initData: encodeAbiParameters([{ type: 'uint256' }], [amount]) // 32 bytes uint256
-        });
+    // 1. Add Spending Policy
+    if (refillInterval > 0) {
+        // --- PERIODIC / RECURRING ALLOWANCE ---
+        if (isNative) {
+            // Note: Implementing periodic native ETH policy requires a separate contract 
+            // similar to the PeriodicERC20Policy but for ValueLimit. 
+            // For now, we fallback to static if native, or throw error.
+            console.warn("Periodic ETH limit not implemented in this demo, falling back to static.");
+            policies.push({
+                policy: VALUE_LIMIT_POLICY as Address,
+                initData: encodeAbiParameters([{ type: 'uint256' }], [amount])
+            });
+        } else {
+            // Use the PeriodicERC20Policy
+            policies.push({
+                policy: PERIODIC_ERC20_POLICY as Address,
+                initData: encodeAbiParameters(
+                    [{ type: 'address[]' }, { type: 'uint256[]' }, { type: 'uint256[]' }],
+                    [[tokenAddress], [amount], [BigInt(refillInterval)]]
+                )
+            });
+        }
     } else {
-        policies.push({
-            policy: ERC20_SPENDING_LIMIT_POLICY as Address,
-            initData: encodeAbiParameters(
-                [{ type: 'address[]' }, { type: 'uint256[]' }],
-                [[tokenAddress], [amount]]
-            )
-        });
+        // --- ONE-TIME / TOTAL ALLOWANCE (Existing Logic) ---
+        if (isNative) {
+            policies.push({
+                policy: VALUE_LIMIT_POLICY as Address,
+                initData: encodeAbiParameters([{ type: 'uint256' }], [amount])
+            });
+        } else {
+            policies.push({
+                policy: ERC20_SPENDING_LIMIT_POLICY as Address,
+                initData: encodeAbiParameters(
+                    [{ type: 'address[]' }, { type: 'uint256[]' }],
+                    [[tokenAddress], [amount]]
+                )
+            });
+        }
     }
 
-    // 2. Add Usage Limit (Max transaction count)
-    policies.push({
-        policy: USAGE_LIMIT_POLICY as Address,
-        initData: encodePacked(['uint128'], [BigInt(usageLimit)])
-    });
+    // 2. Add Usage Limit (Max transaction count) if defined
+    // If it's periodic, we usually allow unlimited usage count (0), or a high number
+    // because the limit is controlled by time.
+    if (usageLimit > 0) {
+        policies.push({
+            policy: USAGE_LIMIT_POLICY as Address,
+            initData: encodePacked(['uint128'], [BigInt(usageLimit)])
+        });
+    }
 
     const sortedActionPolicies = policies.sort((a, b) => a.policy.toLowerCase().localeCompare(b.policy.toLowerCase()));
 

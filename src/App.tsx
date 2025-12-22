@@ -51,6 +51,29 @@ const consoleLog = (stage: string, message: string, data?: any) => {
   console.groupEnd();
 };
 
+const formatError = (error: any): string => {
+  const msg = error?.message || JSON.stringify(error);
+
+  // Smart Account (Entrypoint) Revert Codes
+  if (msg.includes("AA23")) {
+    if (msg.includes("0xacfdb444") || msg.includes("0xd1f90918")) {
+      return "⛔ Policy Violation: Usage limit exceeded or time window not active.";
+    }
+    if (msg.includes("AA22")) {
+      return "⚠️ Session Expired: The validity period for this key has ended.";
+    }
+    return "❌ Transaction Refused: The Smart Session policy rejected this action.";
+  }
+
+  if (msg.includes("AA21")) return "💸 Paymaster Error: Not enough funds to sponsor gas.";
+  if (msg.includes("AA10")) return "❌ Sender Created: The account is already deployed.";
+
+  // Fallback for short messages
+  if (msg.length < 100) return `Error: ${msg}`;
+
+  return "Unknown Error (Check console)";
+};
+
 // --- CONFIG ---
 const PIMLICO_API_KEY = import.meta.env.VITE_PIMLICO_API_KEY;
 const PIMLICO_URL = `https://api.pimlico.io/v2/base-sepolia/rpc?apikey=${PIMLICO_API_KEY}`;
@@ -307,6 +330,9 @@ const App: React.FC = () => {
   const [allowanceAmount, setAllowanceAmount] = useState("");
   const [allowanceUsage, setAllowanceUsage] = useState("1");
   const [allowanceStart, setAllowanceStart] = useState("");
+  const [allowanceType, setAllowanceType] = useState<'onetime' | 'recurring'>('onetime');
+  const [allowanceInterval, setAllowanceInterval] = useState<string>("1");
+  const [allowanceUnit, setAllowanceUnit] = useState<'minutes' | 'hours' | 'days'>('minutes');
   const [myAllowances, setMyAllowances] = useState<any[]>([]);
 
   const [signerMode, setSignerMode] = useState<'main' | 'session'>('main');
@@ -907,14 +933,8 @@ const App: React.FC = () => {
       handleClearSchedule();
 
     } catch (e: any) {
-      const msg = e.message || "";
-      if (msg.includes("AA22") || msg.includes("expired") || msg.includes("not due")) {
-        const date = JSON.parse(localStorage.getItem("scheduled_session") || "{}").startDate;
-        addLog(`Policy Restriction: This transfer is not valid yet.`, "info");
-        addLog(`Please wait until: ${date}`, "info");
-      } else {
-        addLog(`Execution Failed: ${e.message}`, "error");
-      }
+      const niceMessage = formatError(e);
+      addLog(niceMessage, "error");
     } finally {
       setLoading(false);
     }
@@ -981,7 +1001,22 @@ const App: React.FC = () => {
       const sessionOwner = privateKeyToAccount(pk);
       const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
       const startUnix = Math.floor(new Date(allowanceStart).getTime() / 1000);
-      const usageCount = allowanceUsage ? parseInt(allowanceUsage) : 10;
+
+      // Handle Usage Limit: If recurring, default to 0 (unlimited), else use input
+      const usageCount = allowanceType === 'recurring'
+        ? 0
+        : (allowanceUsage ? parseInt(allowanceUsage) : 1);
+
+      // Handle Recurring Logic
+      let refillSeconds = 0;
+      if (allowanceType === 'recurring') {
+        const val = parseInt(allowanceInterval);
+        if (isNaN(val) || val <= 0) throw new Error("Invalid interval");
+
+        if (allowanceUnit === 'minutes') refillSeconds = val * 60;
+        if (allowanceUnit === 'hours') refillSeconds = val * 3600;
+        if (allowanceUnit === 'days') refillSeconds = val * 86400;
+      }
 
       // 2. Format Token Details
       const isNative = selectedToken === 'ETH';
@@ -999,7 +1034,8 @@ const App: React.FC = () => {
         amountRaw,
         usageCount,
         startUnix,
-        salt
+        salt,
+        refillSeconds // Pass the interval
       );
 
       // 4. Propose to Queue
@@ -1011,11 +1047,15 @@ const App: React.FC = () => {
 
       const permissionId = getPermissionId(session);
 
+      const desc = refillSeconds > 0
+        ? `Enable ${allowanceAmount} ${selectedToken} every ${allowanceInterval} ${allowanceUnit}`
+        : `Enable ${allowanceAmount} ${selectedToken} Allowance (Limit: ${usageCount} Tx)`;
+
       await proposeTransaction(
         SMART_SESSIONS_VALIDATOR_ADDRESS,
         0n,
         data,
-        `Enable ${allowanceAmount} ${selectedToken} Allowance (Limit: ${usageCount} Tx)`
+        desc
       );
 
       // 5. Store Metadata Locally
@@ -1026,7 +1066,9 @@ const App: React.FC = () => {
         token: selectedToken,
         usage: usageCount,
         start: allowanceStart,
-        session
+        session,
+        type: allowanceType,
+        interval: allowanceType === 'recurring' ? `${allowanceInterval} ${allowanceUnit}` : null
       };
 
       const updated = [...myAllowances, newAllowance];
@@ -1038,6 +1080,51 @@ const App: React.FC = () => {
 
     } catch (e: any) {
       addLog(`Creation failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRevokeAllowance = async (allowance: any) => {
+    if (!selectedNestedSafeAddr || !allowance.permissionId) return;
+
+    if (!window.confirm("Are you sure you want to revoke this key on-chain?")) return;
+
+    setLoading(true);
+    try {
+      // 1. Encode the call to removeSession
+      // The Nested Safe calls the Smart Session Validator contract
+      const data = encodeFunctionData({
+        abi: ENABLE_SESSIONS_ABI,
+        functionName: "removeSession",
+        args: [allowance.permissionId as Hex]
+      });
+
+      // 2. Propose the transaction to the Queue
+      await proposeTransaction(
+        SMART_SESSIONS_VALIDATOR_ADDRESS,
+        0n,
+        data,
+        `Revoke Key: ${allowance.permissionId.slice(0, 8)}...`
+      );
+
+      // 3. Cleanup Local State immediately
+      // (The key won't work on-chain once the tx executes, so we can hide it now)
+      const updated = myAllowances.filter(a => a.permissionId !== allowance.permissionId);
+      setMyAllowances(updated);
+      localStorage.setItem("my_allowances", JSON.stringify(updated));
+
+      // If this was the active signer, reset mode
+      if (activeSession?.permissionId === allowance.permissionId) {
+        setSignerMode('main');
+        setActiveSession(null);
+      }
+
+      addLog("Revocation proposed to Queue. Key removed from local list.", "success");
+      setActiveTab('queue');
+
+    } catch (e: any) {
+      addLog(`Revocation failed: ${e.message}`, "error");
     } finally {
       setLoading(false);
     }
@@ -1088,8 +1175,6 @@ const App: React.FC = () => {
       const hash = await smartClient.sendTransaction(tx);
       addLog(`Success! UserOp Hash: ${hash}`, "success");
 
-      // --- FIX STARTS HERE: Post-Spend Cleanup ---
-
       // 1. Immediately switch the UI back to the Main Account signer
       setSignerMode('main');
       setActiveSession(null);
@@ -1097,25 +1182,41 @@ const App: React.FC = () => {
       // 2. Update the local allowance list (Decrement usage or remove)
       const updatedAllowances = myAllowances.map(al => {
         if (al.permissionId === permissionId) {
+          // If it's recurring, don't change anything
+          if (al.type === 'recurring') return al;
+
+          // If one-time, decrement usage
           const currentUsage = parseInt(al.usage || "1");
           return { ...al, usage: (currentUsage - 1).toString() };
         }
         return al;
-      }).filter(al => parseInt(al.usage) > 0); // Remove if no usage left
+      }).filter(al => {
+        // Keep the key if:
+        // 1. It is recurring (usage 0 is fine here)
+        // 2. OR it has usage remaining (> 0)
+        if (al.type === 'recurring') return true;
+        return parseInt(al.usage) > 0;
+      });
 
-      // 3. Save updated list to state and storage
+      // 3. Save updated list
       setMyAllowances(updatedAllowances);
       localStorage.setItem("my_allowances", JSON.stringify(updatedAllowances));
 
-      addLog(updatedAllowances.find(a => a.permissionId === permissionId)
-        ? "Allowance updated (Usage count reduced)."
-        : "One-use key consumed and removed from sidebar.", "info");
+      const isRecurring = activeSession.type === 'recurring';
+      addLog(isRecurring
+        ? "Recurring allowance used. Spending limit updated on-chain."
+        : "One-time key used. Usage count reduced.", "info");
 
       // 4. Refresh balances
       setTimeout(() => fetchData(selectedNestedSafeAddr), 4000);
 
     } catch (e: any) {
-      addLog(`Spend failed: ${e.message}`, "error");
+      console.error(e); // Keep full log in console for debugging
+
+      // Use the new helper for the UI log
+      const niceMessage = formatError(e);
+      addLog(niceMessage, "error");
+
     } finally {
       setLoading(false);
     }
@@ -1633,7 +1734,11 @@ const App: React.FC = () => {
                       addLog(`Signer switched to Allowance Key: ${al.permissionId.slice(0, 8)}`, 'info');
                     }}
                   >
-                    🔑 Key: {al.amount} {al.token} ({al.usage} left)
+                    🔑 Key: {al.amount} {al.token}
+                    {al.type === 'recurring'
+                      ? <span style={{ opacity: 0.7, marginLeft: '4px' }}> (Reset: {al.interval})</span>
+                      : <span style={{ opacity: 0.7, marginLeft: '4px' }}> ({al.usage} left)</span>
+                    }
                   </button>
                 ))}
               </div>
@@ -1864,32 +1969,95 @@ const App: React.FC = () => {
               {/* --- ALLOWANCES TAB --- */}
               {activeTab === 'allowances' && (
                 <div>
-                  <div className="section-label">Smart Allowances (Spending + Usage Limits)</div>
+                  <div className="section-label">Smart Allowances</div>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                    Grant restricted access to your Safe. Use <strong>ValueLimitPolicy</strong> for ETH and <strong>ERC20SpendingLimitPolicy</strong> for USDC.
+                    Grant restricted access to your Safe. Supports one-time caps or recurring budgets.
                   </p>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                     <TokenSelector />
 
+                    {/* Allowance Type Switcher */}
                     <div className="input-group">
-                      <label>Total Spending Allowance ({selectedToken})</label>
+                      <label>Allowance Type</label>
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button
+                          className={`chip ${allowanceType === 'onetime' ? 'active' : ''}`}
+                          style={{
+                            flex: 1, justifyContent: 'center', padding: '10px',
+                            borderColor: allowanceType === 'onetime' ? 'var(--primary)' : 'var(--border)'
+                          }}
+                          onClick={() => {
+                            setAllowanceType('onetime');
+                            setAllowanceUsage("1"); // Reset to default
+                          }}
+                        >
+                          One-Time Cap
+                        </button>
+                        <button
+                          className={`chip ${allowanceType === 'recurring' ? 'active' : ''}`}
+                          style={{
+                            flex: 1, justifyContent: 'center', padding: '10px',
+                            borderColor: allowanceType === 'recurring' ? 'var(--primary)' : 'var(--border)'
+                          }}
+                          onClick={() => {
+                            setAllowanceType('recurring');
+                            setAllowanceUsage(""); // Clear usage input
+                          }}
+                        >
+                          Recurring (Budget)
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="input-group">
+                      <label>Spending Amount ({selectedToken})</label>
                       <input type="number" value={allowanceAmount} onChange={e => setAllowanceAmount(e.target.value)} placeholder="0.0" />
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                    {/* Recurring Inputs */}
+                    {allowanceType === 'recurring' && (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                        <div className="input-group">
+                          <label>Reset Every</label>
+                          <input type="number" value={allowanceInterval} onChange={e => setAllowanceInterval(e.target.value)} />
+                        </div>
+                        <div className="input-group">
+                          <label>Unit</label>
+                          <select
+                            value={allowanceUnit}
+                            onChange={e => setAllowanceUnit(e.target.value as any)}
+                            style={{
+                              width: '100%', background: 'var(--bg-dark)', border: '1px solid var(--border)',
+                              color: 'white', padding: '10px', borderRadius: '8px', fontFamily: 'JetBrains Mono'
+                            }}
+                          >
+                            <option value="minutes">Minutes</option>
+                            <option value="hours">Hours</option>
+                            <option value="days">Days</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* One-Time Inputs */}
+                    {allowanceType === 'onetime' && (
                       <div className="input-group">
                         <label>Max Transactions (Usage Limit)</label>
                         <input type="number" value={allowanceUsage} onChange={e => setAllowanceUsage(e.target.value)} placeholder="e.g. 5" />
                       </div>
-                      <div className="input-group">
-                        <label>Key Active From</label>
-                        <input type="datetime-local" value={allowanceStart} onChange={e => setAllowanceStart(e.target.value)} style={{ colorScheme: 'dark' }} />
-                      </div>
+                    )}
+
+                    <div className="input-group">
+                      <label>Key Active From</label>
+                      <input type="datetime-local" value={allowanceStart} onChange={e => setAllowanceStart(e.target.value)} style={{ colorScheme: 'dark' }} />
                     </div>
 
                     <button className="action-btn" onClick={handleCreateAllowance} disabled={loading || !isCurrentSafeOwner || !allowanceStart || !allowanceAmount}>
-                      Propose Allowance Key
+                      {allowanceType === 'recurring'
+                        ? `Propose Recurring Budget`
+                        : `Propose Allowance Key`
+                      }
                     </button>
                   </div>
 
@@ -1901,12 +2069,40 @@ const App: React.FC = () => {
                       myAllowances.map((al, i) => (
                         <div key={i} className="owner-row" style={{ borderLeft: '3px solid var(--primary)' }}>
                           <div style={{ flex: 1 }}>
-                            <div style={{ fontWeight: '600' }}>{al.amount} {al.token} Total Cap</div>
+                            <div style={{ fontWeight: '600' }}>
+                              {al.amount} {al.token}
+                              {al.type === 'recurring' ? <span style={{ fontSize: '0.75rem', color: 'var(--success)', marginLeft: '6px' }}>(Resets every {al.interval})</span> : ' Total Cap'}
+                            </div>
                             <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                              Usage: Max {al.usage || 'N/A'} Tx | ID: {al.permissionId.slice(0, 14)}...
+                              Usage: {al.usage > 0 ? `Max ${al.usage} Tx` : 'Unlimited'} | ID: {al.permissionId.slice(0, 14)}...
                             </div>
                           </div>
-                          <button className="action-btn secondary small" onClick={() => addLog("To spend: Select this key as signer and use Transfer tab.", "info")}>Spend</button>
+
+                          {/* --- ACTION BUTTONS --- */}
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              className="action-btn secondary small"
+                              onClick={() => {
+                                setSignerMode('session');
+                                setActiveSession(al);
+                                setActiveTab('transfer'); // Jump to transfer tab for UX
+                                addLog(`Selected Key: ${al.permissionId.slice(0, 8)}...`, "info");
+                              }}
+                            >
+                              Use Key
+                            </button>
+
+                            <button
+                              className="icon-btn"
+                              style={{ color: '#ef4444', borderColor: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px' }}
+                              onClick={() => handleRevokeAllowance(al)}
+                              title="Revoke On-Chain"
+                              disabled={loading || !isCurrentSafeOwner}
+                            >
+                              {/* Simple Trash Icon */}
+                              <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>
+                            </button>
+                          </div>
                         </div>
                       ))
                     )}
