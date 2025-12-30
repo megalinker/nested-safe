@@ -1,7 +1,6 @@
 import { createWalletClient, custom, type WalletClient } from 'viem';
-import { baseSepolia } from 'viem/chains';
+import { ACTIVE_CHAIN, CHAIN_ID_HEX, RPC_URL, NETWORK } from '../config';
 
-// Define the window interface to include Phantom
 interface Window {
   phantom?: {
     ethereum?: any;
@@ -10,51 +9,47 @@ interface Window {
 }
 
 export const connectPhantom = async (): Promise<WalletClient> => {
-  // 1. Detect Provider
   const provider = (window as unknown as Window).phantom?.ethereum || (window as unknown as Window).ethereum;
 
   if (!provider) {
     throw new Error("Phantom wallet not found. Please install it.");
   }
 
-  // 2. Request Access
   await provider.request({ method: 'eth_requestAccounts' });
 
-  // 3. Switch to Base Sepolia (Chain ID 84532)
+  // Switch to Configured Chain (Base Sepolia or Mainnet)
   try {
     await provider.request({
       method: 'wallet_switchEthereumChain',
-      params: [{ chainId: '0x14a34' }], // 84532 in hex
+      params: [{ chainId: CHAIN_ID_HEX }],
     });
   } catch (switchError: any) {
-    // This error code indicates that the chain has not been added to MetaMask/Phantom.
     if (switchError.code === 4902) {
+      // Define params dynamically based on config
       await provider.request({
         method: 'wallet_addEthereumChain',
         params: [
           {
-            chainId: '0x14a34',
-            chainName: 'Base Sepolia',
+            chainId: CHAIN_ID_HEX,
+            chainName: NETWORK === 'mainnet' ? 'Base Mainnet' : 'Base Sepolia',
             nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-            rpcUrls: ['https://sepolia.base.org'],
-            blockExplorerUrls: ['https://sepolia.basescan.org'],
+            rpcUrls: [RPC_URL],
+            blockExplorerUrls: [ACTIVE_CHAIN.blockExplorers.default.url],
           },
         ],
       });
     }
   }
 
-  // 4. Get Account
   const [account] = await provider.request({ method: 'eth_accounts' });
 
   if (!account) {
     throw new Error("No account found");
   }
 
-  // 5. Create Viem Client
   return createWalletClient({
-    account, 
-    chain: baseSepolia,
+    account,
+    chain: ACTIVE_CHAIN, // Use config chain
     transport: custom(provider),
   });
 };

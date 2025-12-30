@@ -5,17 +5,14 @@ import {
     type Hex,
     type Address,
 } from "viem";
-
-export const OWNABLE_VALIDATOR_ADDRESS = "0x000000000013fdb5234e4e3162a810f54d9f7e98";
-export const VALUE_LIMIT_POLICY = "0x730DA93267E7E513e932301B47F2ac7D062abC83";
-export const USAGE_LIMIT_POLICY = "0x1F34eF8311345A3A4a4566aF321b313052F51493";
-export const SUDO_POLICY = "0x0000003111cD8e92337C100F22B7A9dbf8DEE301";
-export const TIME_FRAME_POLICY = "0x8177451511dE0577b911C254E9551D981C26dc72";
-export const ERC20_SPENDING_LIMIT_POLICY = "0x00000088D48cF102A8Cdb0137A9b173f957c6343";
-
-export const PERIODIC_ERC20_POLICY = "0x42e031a5efC778D3f90b3eB26F13d9784e55aA55";
-
-export const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+import {
+    OWNABLE_VALIDATOR_ADDRESS,
+    VALUE_LIMIT_POLICY,
+    USAGE_LIMIT_POLICY,
+    SUDO_POLICY,
+    TIME_FRAME_POLICY,
+    PERIODIC_ERC20_POLICY
+} from "../config";
 
 export const encodePolicy = (type: 'value' | 'usage' | 'sudo' | 'time', limit?: bigint, validAfter?: number): { policy: Address; initData: Hex } => {
     if (type === 'sudo') return { policy: SUDO_POLICY as Address, initData: "0x" };
@@ -27,7 +24,7 @@ export const encodePolicy = (type: 'value' | 'usage' | 'sudo' | 'time', limit?: 
             policy: TIME_FRAME_POLICY as Address,
             initData: encodePacked(
                 ['uint128', 'uint128'],
-                [0n, BigInt(validAfter || 0)] // validUntil = 0 (never), validAfter = start time
+                [0n, BigInt(validAfter || 0)]
             )
         };
     }
@@ -84,13 +81,10 @@ export const createAllowanceSessionStruct = (
     sessionOwner: Address,
     tokenAddress: Address,
     amount: bigint,
-    // usageLimit removed (Budgets are usually unlimited usage, constrained by time)
     startUnix: number,
     salt: Hex,
     refillInterval: number
 ) => {
-    // 1. Safety Check: We only deployed the Periodic Policy for ERC20s (USDC)
-    // If you try to do this with Native ETH, it will fail because the contract expects `transfer(to, amount)`
     if (tokenAddress === "0x0000000000000000000000000000000000000000") {
         throw new Error("Recurring Allowances currently only support ERC20 tokens (USDC), not Native ETH.");
     }
@@ -101,7 +95,7 @@ export const createAllowanceSessionStruct = (
 
     const policies = [];
 
-    // 2. Add The Periodic Policy
+    // Use variable from config
     policies.push({
         policy: PERIODIC_ERC20_POLICY as Address,
         initData: encodeAbiParameters(
@@ -110,11 +104,6 @@ export const createAllowanceSessionStruct = (
         )
     });
 
-    // 3. Add Usage Limit (Optional: defaulting to 0/unlimited for budgets is standard)
-    // We add a massive limit (e.g., 1 million txs) just to be safe, or we can omit it entirely.
-    // Let's omit it to save gas, effectively making it unlimited.
-
-    // Sort policies (Required by 7579)
     const sortedActionPolicies = policies.sort((a, b) => a.policy.toLowerCase().localeCompare(b.policy.toLowerCase()));
 
     return {

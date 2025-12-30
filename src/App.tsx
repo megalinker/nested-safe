@@ -18,7 +18,6 @@ import {
   encodePacked,
   size
 } from "viem";
-import { baseSepolia } from "viem/chains";
 import { entryPoint07Address } from "viem/account-abstraction";
 import { createSmartAccountClient } from "permissionless";
 import { toSafeSmartAccount } from "permissionless/accounts";
@@ -28,10 +27,11 @@ import Safe, { type PasskeyArgType } from "@safe-global/protocol-kit";
 import { connectPhantom } from "./utils/phantom";
 import "./App.css";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { createAllowanceSessionStruct, createSessionStruct, USDC_ADDRESS } from "./utils/smartSessions";
+import { createAllowanceSessionStruct, createSessionStruct } from "./utils/smartSessions";
 import { getPermissionId, getSafe7579SessionAccount } from "./utils/safe7579";
 import { createPasskey, loadPasskeys, storePasskey } from "./utils/passkeys";
 import { executePasskeyTransaction, getSafeInfo } from "./utils/safePasskeyClient";
+import { ACTIVE_CHAIN, BUNDLER_URL, NETWORK, RPC_URL, USDC_ADDRESS } from "./config";
 
 // --- LOGGING HELPER ---
 const consoleLog = (stage: string, message: string, data?: any) => {
@@ -75,10 +75,11 @@ const formatError = (error: any): string => {
 };
 
 // --- CONFIG ---
-const PIMLICO_API_KEY = import.meta.env.VITE_PIMLICO_API_KEY;
-const PIMLICO_URL = `https://api.pimlico.io/v2/base-sepolia/rpc?apikey=${PIMLICO_API_KEY}`;
-const PUBLIC_RPC = "https://sepolia.base.org";
-const SAFE_TX_SERVICE_URL = "https://safe-transaction-base-sepolia.safe.global/api/v1";
+const PIMLICO_URL = BUNDLER_URL;
+const PUBLIC_RPC = RPC_URL;
+const SAFE_TX_SERVICE_URL = NETWORK === 'mainnet'
+  ? "https://safe-transaction-base.safe.global/api/v1"
+  : "https://safe-transaction-base-sepolia.safe.global/api/v1";
 
 // --- RHINESTONE ADDRESSES ---
 const SAFE_7579_ADAPTER_ADDRESS = "0x7579f2AD53b01c3D8779Fe17928e0D48885B0003";
@@ -533,7 +534,7 @@ const App: React.FC = () => {
 
   const checkSessionStatus = async (account: string, permissionId: string) => {
     try {
-      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
       const isEnabled = await publicClient.readContract({
         address: SMART_SESSIONS_VALIDATOR_ADDRESS,
         abi: ENABLE_SESSIONS_ABI,
@@ -555,7 +556,7 @@ const App: React.FC = () => {
       setLoading(true);
       const safeIndex = mySafes.length + 1;
       const salt = BigInt(Date.now()).toString();
-      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
       const safeAccount = await toSafeSmartAccount({
         client: publicClient, owners: [client], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1", saltNonce: BigInt(salt),
       });
@@ -608,7 +609,7 @@ const App: React.FC = () => {
         const client = await getClient();
         if (!client) return;
 
-        const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+        const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
         const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
         // Initialize Parent Smart Account to execute the deployment tx
@@ -622,7 +623,7 @@ const App: React.FC = () => {
         });
 
         const smartAccountClient = createSmartAccountClient({
-          account: safeAccount, chain: baseSepolia, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
+          account: safeAccount, chain: ACTIVE_CHAIN, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
           userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
         });
 
@@ -666,7 +667,7 @@ const App: React.FC = () => {
 
     consoleLog("FETCH", `Fetching data for Nested Safe: ${address}`);
 
-    const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+    const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
 
     try {
       // 1. Balances
@@ -745,7 +746,7 @@ const App: React.FC = () => {
     try {
       addLog(`Checking on-chain status for ${selectedNestedSafeAddr.slice(0, 8)}...`, "info");
 
-      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
       const targetSafe = selectedNestedSafeAddr as Address;
       const adapterAddr = SAFE_7579_ADAPTER_ADDRESS.toLowerCase();
 
@@ -875,7 +876,7 @@ const App: React.FC = () => {
         throw new Error("Session ID mismatch. Please clear schedule and try again.");
       }
 
-      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
       const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
       const safeAccount = await getSafe7579SessionAccount(
@@ -887,7 +888,7 @@ const App: React.FC = () => {
 
       const smartClient = createSmartAccountClient({
         account: safeAccount,
-        chain: baseSepolia,
+        chain: ACTIVE_CHAIN,
         bundlerTransport: http(PIMLICO_URL),
         paymaster: pimlicoClient,
         userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
@@ -1118,7 +1119,7 @@ const App: React.FC = () => {
       const { privateKey, session, token, permissionId } = activeSession;
       const sessionOwner = privateKeyToAccount(privateKey);
 
-      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
       const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
       const safeAccount = await getSafe7579SessionAccount(
@@ -1130,7 +1131,7 @@ const App: React.FC = () => {
 
       const smartClient = createSmartAccountClient({
         account: safeAccount,
-        chain: baseSepolia,
+        chain: ACTIVE_CHAIN,
         bundlerTransport: http(PIMLICO_URL),
         paymaster: pimlicoClient,
         userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
@@ -1205,7 +1206,7 @@ const App: React.FC = () => {
   // --- MULTI-SIG LOGIC ---
 
   const getSafeTxHash = async (to: string, val: bigint, data: Hex, operation: 0 | 1, nonceOffset = 0) => {
-    const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+    const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
 
     let currentNonce = 0n;
     try {
@@ -1231,7 +1232,7 @@ const App: React.FC = () => {
 
       // Fallback: Calculate Hash Off-chain (EIP-712) for Counterfactual Safes
       const domain = {
-        chainId: baseSepolia.id,
+        chainId: ACTIVE_CHAIN.id,
         verifyingContract: selectedNestedSafeAddr as Hex,
       };
 
@@ -1331,7 +1332,7 @@ const App: React.FC = () => {
         const parent = mySafes.find(s => s.address === selectedSafeAddr);
         if (!parent) throw new Error("Parent Safe info not found");
 
-        const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+        const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
         const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
         // Initialize the Parent Safe Smart Account
@@ -1346,7 +1347,7 @@ const App: React.FC = () => {
 
         const smartClient = createSmartAccountClient({
           account: safeAccount,
-          chain: baseSepolia,
+          chain: ACTIVE_CHAIN,
           bundlerTransport: http(PIMLICO_URL),
           paymaster: pimlicoClient,
           userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
@@ -1390,7 +1391,7 @@ const App: React.FC = () => {
 
   const checkQueueApprovals = async () => {
     if (!selectedNestedSafeAddr) return;
-    const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+    const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
     const newMap: Record<string, string[]> = {};
 
     const relevantTxs = queuedTxs.filter(t =>
@@ -1425,7 +1426,7 @@ const App: React.FC = () => {
 
     try {
       setLoading(true);
-      const publicClient = createPublicClient({ chain: baseSepolia, transport: http(PUBLIC_RPC) });
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
 
       // 1. Check if Nested Safe is deployed
       const code = await publicClient.getBytecode({ address: selectedNestedSafeAddr as Hex });
@@ -1529,7 +1530,7 @@ const App: React.FC = () => {
         });
 
         const smartClient = createSmartAccountClient({
-          account: safeAccount, chain: baseSepolia, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
+          account: safeAccount, chain: ACTIVE_CHAIN, bundlerTransport: http(PIMLICO_URL), paymaster: pimlicoClient,
           userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
         });
 
@@ -1609,7 +1610,9 @@ const App: React.FC = () => {
   return (
     <div className="app-container">
       <header className="header">
-        <span className="header-badge">Base Sepolia</span>
+        <span className="header-badge">
+          {NETWORK === 'mainnet' ? 'Base Mainnet' : 'Base Sepolia'}
+        </span>
         <h1>Nested Safe Engine</h1>
       </header>
 
@@ -2145,7 +2148,16 @@ const App: React.FC = () => {
                             </div>
                             <div style={{ textAlign: 'right' }}>
                               <div style={{ fontWeight: '600' }}>{val} ETH</div>
-                              {tx.transactionHash && <a href={`https://sepolia.basescan.org/tx/${tx.transactionHash}`} target="_blank" rel="noreferrer" style={{ fontSize: '0.75rem', color: 'var(--primary)', textDecoration: 'none' }}>Explorer <Icons.ExternalLink /></a>}
+                              {tx.transactionHash && (
+                                <a
+                                  href={`${ACTIVE_CHAIN.blockExplorers?.default.url}/tx/${tx.transactionHash}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  style={{ fontSize: '0.75rem', color: 'var(--primary)', textDecoration: 'none' }}
+                                >
+                                  Explorer <Icons.ExternalLink />
+                                </a>
+                              )}
                             </div>
                           </div>
                         )
