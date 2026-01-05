@@ -174,6 +174,7 @@ const Icons = {
   Module: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>,
   Bug: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="4" ry="4" /><path d="M16 3v5" /><path d="M8 3v5" /><path d="M3 11h18" /></svg>,
   Key: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="7.5" cy="15.5" r="5.5" /><path d="m21 2-9.6 9.6" /><path d="m15.5 7.5 3 3L22 7l-3-3" /></svg>,
+  Settings: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
 };
 
 // --- TYPES ---
@@ -220,13 +221,14 @@ const TOKENS = {
 
 // --- COMPONENTS ---
 
-const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh }: {
+const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh, onSettings }: {
   safe: StoredSafe,
   isSelected: boolean,
   onClick: () => void,
   type: 'parent' | 'nested',
   balanceInfo?: { eth: string | null, usdc: string | null },
-  onRefresh?: () => void
+  onRefresh?: () => void,
+  onSettings?: () => void
 }) => {
   const [copied, setCopied] = useState(false);
   const handleCopy = (e: React.MouseEvent) => {
@@ -247,6 +249,20 @@ const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh 
           <div className="safe-avatar" style={{ background: gradient }}></div>
           <div className="safe-name">{safe.name}</div>
         </div>
+
+        <div style={{ display: 'flex', gap: '4px' }}>
+          {type === 'parent' && isSelected && onSettings && (
+            <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onSettings(); }} title="Manage Signers">
+              <Icons.Settings />
+            </button>
+          )}
+          {type === 'nested' && isSelected && onRefresh && (
+            <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onRefresh(); }} title="Refresh Balance">
+              <Icons.Refresh />
+            </button>
+          )}
+        </div>
+
         {type === 'nested' && isSelected && onRefresh && (
           <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onRefresh(); }} title="Refresh Balance">
             <Icons.Refresh />
@@ -296,6 +312,11 @@ const App: React.FC = () => {
 
   const [selectedSafeAddr, setSelectedSafeAddr] = useState<string>("");
   const [selectedNestedSafeAddr, setSelectedNestedSafeAddr] = useState<string>("");
+
+  // Parent Safe Management State
+  const [isParentSettingsOpen, setIsParentSettingsOpen] = useState(false);
+  const [parentOwners, setParentOwners] = useState<string[]>([]);
+  const [newParentOwnerInput, setNewParentOwnerInput] = useState("");
 
   const [activeTab, setActiveTab] = useState<'transfer' | 'scheduled' | 'allowances' | 'owners' | 'queue' | 'history' | 'settings'>('transfer');
 
@@ -477,6 +498,99 @@ const App: React.FC = () => {
     } catch (e: any) {
       addLog(`Wallet connection failed: ${e.message}`, "error");
       return null;
+    }
+  };
+
+  const fetchParentOwners = async (address: string) => {
+    try {
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
+      const owners = await publicClient.readContract({
+        address: address as Hex,
+        abi: SAFE_ABI,
+        functionName: "getOwners"
+      });
+      setParentOwners(Array.from(owners));
+    } catch (e) {
+      console.error("Failed to fetch parent owners", e);
+    }
+  };
+
+  const handleOpenParentSettings = () => {
+    if (selectedSafeAddr) {
+      fetchParentOwners(selectedSafeAddr);
+      setIsParentSettingsOpen(true);
+    }
+  };
+
+  const handleAddSignerToParent = async () => {
+    if (!newParentOwnerInput || !selectedSafeAddr) return;
+
+    try {
+      setLoading(true);
+
+      // 1. Encode Data: Add Owner, keep threshold at 1
+      const data = encodeFunctionData({
+        abi: SAFE_ABI,
+        functionName: "addOwnerWithThreshold",
+        args: [newParentOwnerInput as Hex, 1n]
+      });
+
+      let txHash;
+
+      // 2. Execute based on Login Method
+      if (loginMethod === 'phantom' && walletClient) {
+
+        // Init Client for Parent Safe
+        const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
+        const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
+        const parentInfo = mySafes.find(s => s.address === selectedSafeAddr);
+
+        const safeAccount = await toSafeSmartAccount({
+          client: publicClient,
+          owners: [walletClient],
+          entryPoint: { address: entryPoint07Address, version: "0.7" },
+          version: "1.4.1",
+          address: selectedSafeAddr as Hex,
+          saltNonce: parentInfo ? BigInt(parentInfo.salt) : 0n
+        });
+
+        const smartClient = createSmartAccountClient({
+          account: safeAccount,
+          chain: ACTIVE_CHAIN,
+          bundlerTransport: http(PIMLICO_URL),
+          paymaster: pimlicoClient,
+          userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
+        });
+
+        // Send Self-Transaction to add owner
+        txHash = await smartClient.sendTransaction({
+          to: selectedSafeAddr as Hex,
+          value: 0n,
+          data: data
+        });
+
+      } else if (loginMethod === 'passkey' && activePasskey) {
+
+        // Passkey Mode: Safe4337Pack targets itself by default
+        const tx = {
+          to: selectedSafeAddr,
+          value: '0',
+          data: data
+        };
+
+        txHash = await executePasskeyTransaction(activePasskey, [tx]);
+      }
+
+      addLog(`Signer Added! TX: ${txHash}`, "success");
+      setNewParentOwnerInput("");
+
+      // Refresh list after short delay
+      setTimeout(() => fetchParentOwners(selectedSafeAddr), 4000);
+
+    } catch (e: any) {
+      addLog(`Failed to add signer: ${formatError(e)}`, "error");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1687,6 +1801,7 @@ const App: React.FC = () => {
                     isSelected={selectedSafeAddr === safe.address}
                     onClick={() => setSelectedSafeAddr(safe.address)}
                     type="parent"
+                    onSettings={handleOpenParentSettings}
                   />
                 ))}
               </div>
@@ -2182,6 +2297,61 @@ const App: React.FC = () => {
           <div ref={logsEndRef} />
         </div>
       </div>
+
+      {/* PARENT SETTINGS MODAL */}
+      {isParentSettingsOpen && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.8)', zIndex: 999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <div style={{
+            background: 'var(--surface-2)', border: '1px solid var(--border)',
+            padding: '2rem', borderRadius: '12px', width: '450px', maxWidth: '90%'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+              <h3 style={{ margin: 0 }}>Manage Parent Safe</h3>
+              <button className="icon-btn" onClick={() => setIsParentSettingsOpen(false)}>✕</button>
+            </div>
+
+            <div className="section-label">Current Owners</div>
+            <div style={{ maxHeight: '200px', overflowY: 'auto', marginBottom: '1.5rem', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {parentOwners.map(owner => (
+                <div key={owner} style={{
+                  background: 'var(--surface-1)', padding: '10px', borderRadius: '6px',
+                  fontFamily: 'JetBrains Mono', fontSize: '0.85rem', border: '1px solid var(--border)'
+                }}>
+                  {owner}
+                  {eoaAddress && owner.toLowerCase() === eoaAddress.toLowerCase() &&
+                    <span className="owner-tag" style={{ marginLeft: '10px' }}>You</span>
+                  }
+                </div>
+              ))}
+            </div>
+
+            <div className="section-label">Add New Signer</div>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '10px' }}>
+              This will add a new owner address. The threshold will remain 1, meaning any single signer can execute transactions.
+            </p>
+
+            <div className="input-group">
+              <input
+                placeholder="New Signer Address (0x...)"
+                value={newParentOwnerInput}
+                onChange={(e) => setNewParentOwnerInput(e.target.value)}
+              />
+            </div>
+
+            <button
+              className="action-btn"
+              onClick={handleAddSignerToParent}
+              disabled={loading || !newParentOwnerInput}
+            >
+              Add Signer
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
