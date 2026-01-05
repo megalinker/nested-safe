@@ -1114,12 +1114,68 @@ const App: React.FC = () => {
     setLoading(true);
 
     try {
+      // --- 1. SETUP / CHECKS (Same as Schedule) ---
+      addLog(`Checking on-chain status for ${selectedNestedSafeAddr.slice(0, 8)}...`, "info");
+
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
+      const targetSafe = selectedNestedSafeAddr as Address;
+      const adapterAddr = SAFE_7579_ADAPTER_ADDRESS.toLowerCase();
+
+      const [isModuleEnabled, rawFallback] = await Promise.all([
+        publicClient.readContract({
+          address: targetSafe,
+          abi: SAFE_ABI,
+          functionName: "isModuleEnabled",
+          args: [SAFE_7579_ADAPTER_ADDRESS]
+        }).catch(() => false),
+        publicClient.getStorageAt({
+          address: targetSafe,
+          slot: FALLBACK_HANDLER_STORAGE_SLOT as Hex
+        }).catch(() => "0x")
+      ]);
+
+      const currentFallback = rawFallback && rawFallback !== "0x"
+        ? `0x${rawFallback.slice(-40)}`.toLowerCase()
+        : "0x";
+
+      const batch: { to: string; value: bigint; data: string; operation: number }[] = [];
+
+      // Only add setup steps if needed
+      if (!isModuleEnabled) {
+        addLog("Bundling first-time 7579 setup...", "info");
+        batch.push({
+          to: targetSafe, value: 0n, operation: 0,
+          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "enableModule", args: [SAFE_7579_ADAPTER_ADDRESS] })
+        });
+
+        const initData = encodeFunctionData({
+          abi: ADAPTER_7579_ABI,
+          functionName: "initializeAccount",
+          args: [
+            [{ module: SMART_SESSIONS_VALIDATOR_ADDRESS, initData: "0x", moduleType: 1n }],
+            { registry: "0x0000000000000000000000000000000000000000", attesters: [], threshold: 0 }
+          ]
+        });
+        batch.push({
+          to: SAFE_7579_ADAPTER_ADDRESS, value: 0n, operation: 0,
+          data: concat([initData, targetSafe])
+        });
+      }
+
+      if (currentFallback !== adapterAddr) {
+        addLog("Updating Fallback Handler...", "info");
+        batch.push({
+          to: targetSafe, value: 0n, operation: 0,
+          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "setFallbackHandler", args: [SAFE_7579_ADAPTER_ADDRESS] })
+        });
+      }
+
+      // --- 2. PREPARE SESSION ---
       const pk = generatePrivateKey();
       const sessionOwner = privateKeyToAccount(pk);
       const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
       const startUnix = Math.floor(new Date(allowanceStart).getTime() / 1000);
 
-      // Always Recurring
       const val = parseInt(allowanceInterval);
       if (isNaN(val) || val <= 0) throw new Error("Invalid interval");
 
@@ -1140,20 +1196,27 @@ const App: React.FC = () => {
         refillSeconds
       );
 
-      const data = encodeFunctionData({
+      const enableData = encodeFunctionData({
         abi: ENABLE_SESSIONS_ABI,
         functionName: "enableSessions",
         args: [[session]]
       });
 
+      batch.push({
+        to: SMART_SESSIONS_VALIDATOR_ADDRESS, value: 0n, operation: 0,
+        data: enableData
+      });
+
       const permissionId = getPermissionId(session);
 
-      await proposeTransaction(
-        SMART_SESSIONS_VALIDATOR_ADDRESS,
-        0n,
-        data,
-        `Enable ${allowanceAmount} ${selectedToken} every ${allowanceInterval} ${allowanceUnit}`
-      );
+      // --- 3. PROPOSE ---
+      const description = `Enable ${allowanceAmount} ${selectedToken} every ${allowanceInterval} ${allowanceUnit}`;
+
+      if (batch.length > 1) {
+        await proposeTransaction(MULTI_SEND_ADDRESS, 0n, encodeMultiSend(batch), `Setup 7579 + ${description}`, 0, 1);
+      } else {
+        await proposeTransaction(SMART_SESSIONS_VALIDATOR_ADDRESS, 0n, enableData, description, 0, 0);
+      }
 
       const newAllowance = {
         permissionId,
