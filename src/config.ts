@@ -9,8 +9,8 @@ export const CHAIN_ID = ACTIVE_CHAIN.id;
 export const CHAIN_ID_HEX = `0x${CHAIN_ID.toString(16)}`;
 
 // 3. RPC Configuration
-export const RPC_URL = NETWORK === 'mainnet' 
-  ? import.meta.env.VITE_RPC_URL_MAINNET 
+export const RPC_URL = NETWORK === 'mainnet'
+  ? import.meta.env.VITE_RPC_URL_MAINNET
   : import.meta.env.VITE_RPC_URL_SEPOLIA;
 
 const PIMLICO_API_KEY = import.meta.env.VITE_PIMLICO_API_KEY;
@@ -26,10 +26,10 @@ export const USDC_ADDRESS = NETWORK === 'mainnet'
   ? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" // Base Mainnet USDC
   : "0x036CbD53842c5426634e7929541eC2318f3dCF7e"; // Base Sepolia USDC
 
-// Periodic Policy (Provided by you for Mainnet)
+// Periodic Policy (V4 Addresses)
 export const PERIODIC_ERC20_POLICY = NETWORK === 'mainnet'
-  ? "0x42e031a5efC778D3f90b3eB26F13d9784e55aA55"
-  : "0x6913e84d824C9425aBf3817103107453612Dab5e";
+  ? "0x6A5FBd00Be22ce1f7416c19C320e7dC9173008F0"
+  : "0x5C056458d126Ec5479FAa65d632E68ede0804B0d";
 
 // Constants common to both (Safe/Rhinestone Singletons)
 export const SAFE_7579_ADAPTER_ADDRESS = "0x7579f2AD53b01c3D8779Fe17928e0D48885B0003";

@@ -27,7 +27,7 @@ import Safe, { type PasskeyArgType } from "@safe-global/protocol-kit";
 import { connectPhantom } from "./utils/phantom";
 import "./App.css";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { createAllowanceSessionStruct, createSessionStruct } from "./utils/smartSessions";
+import { calculateConfigId, createAllowanceSessionStruct, createSessionStruct } from "./utils/smartSessions";
 import { getPermissionId, getSafe7579SessionAccount } from "./utils/safe7579";
 import { createPasskey, loadPasskeys, storePasskey } from "./utils/passkeys";
 import { executePasskeyTransaction, getSafeInfo } from "./utils/safePasskeyClient";
@@ -136,9 +136,11 @@ const ENABLE_SESSIONS_ABI = parseAbi([
 
 // --- PERIODIC POLICY V3 ABI ---
 const PERIODIC_POLICY_ABI = parseAbi([
+  "struct TokenPolicyData { uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isDeleted; }", // Return struct
   "struct AllowanceInfo { bytes32 configId; address token; uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isActive; }",
   "function getAllowances(address account) external view returns (AllowanceInfo[] memory)",
-  "function revokeAllowance(bytes32 configId, address token) external"
+  "function revokeAllowance(bytes32 configId, address token) external",
+  "function getAllowance(address account, bytes32 configId, address token) external view returns (TokenPolicyData memory)"
 ]);
 
 const MULTI_SEND_ABI = parseAbi([
@@ -1203,6 +1205,12 @@ const App: React.FC = () => {
 
       const permissionId = getPermissionId(session);
 
+      const configId = calculateConfigId(
+        selectedNestedSafeAddr as Address,
+        permissionId,
+        tokenAddr
+      );
+
       // --- 3. PROPOSE ---
       const description = `Enable ${finalName}: ${allowanceAmount} ${selectedToken}`;
 
@@ -1214,6 +1222,7 @@ const App: React.FC = () => {
 
       const newAllowance = {
         permissionId,
+        configId,
         privateKey: pk,
         name: finalName,
         amount: allowanceAmount,
@@ -1236,6 +1245,34 @@ const App: React.FC = () => {
       addLog(`Creation failed: ${e.message}`, "error");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCheckSpecific = async (allowance: any) => {
+    if (!allowance.configId) {
+      alert("This allowance is from an older version (no Config ID stored). Use the 'Sync from Chain' button below.");
+      return;
+    }
+
+    try {
+      addLog(`Fetching live status for ${allowance.name}...`, "info");
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
+
+      const data = await publicClient.readContract({
+        address: PERIODIC_ERC20_POLICY as Address,
+        abi: PERIODIC_POLICY_ABI,
+        functionName: "getAllowance",
+        args: [
+          selectedNestedSafeAddr as Address,
+          allowance.configId as Hex,
+          USDC_ADDRESS as Address // Assuming USDC for allowances
+        ]
+      });
+
+      consoleLog("ALLOWANCE DATA", allowance.name, data);
+      addLog(`Status: ${data.isDeleted ? 'Inactive ❌' : 'Active ✅'} | Spent: ${formatUnits(data.amountSpent, 6)}`, "success");
+    } catch (e: any) {
+      addLog(`Fetch failed: ${e.message}`, "error");
     }
   };
 
@@ -2220,6 +2257,9 @@ const App: React.FC = () => {
                               }}
                             >
                               Use Key
+                            </button>
+                            <button className="icon-btn" onClick={() => handleCheckSpecific(al)} title="Check Live Status">
+                              <Icons.Refresh />
                             </button>
                             <button
                               className="icon-btn"

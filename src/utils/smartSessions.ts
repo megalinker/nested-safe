@@ -100,14 +100,14 @@ export const createAllowanceSessionStruct = (
         policy: PERIODIC_ERC20_POLICY as Address,
         initData: encodeAbiParameters(
             [
-                { type: 'address[]' }, 
-                { type: 'uint256[]' }, 
+                { type: 'address[]' },
+                { type: 'uint256[]' },
                 { type: 'uint256[]' },
                 { type: 'string[]' }
             ],
             [
-                [tokenAddress], 
-                [amount], 
+                [tokenAddress],
+                [amount],
                 [BigInt(refillInterval)],
                 [allowanceName]
             ]
@@ -135,4 +135,22 @@ export const createAllowanceSessionStruct = (
         }],
         permitERC4337Paymaster: true
     };
+};
+
+export const calculateConfigId = (
+    account: Address,
+    permissionId: Hex,
+    tokenAddress: Address
+): Hex => {
+    // 1. Calculate Action ID (Token + Transfer Selector)
+    const selector = "0xa9059cbb";
+    const actionId = keccak256(encodePacked(['address', 'bytes4'], [tokenAddress, selector]));
+
+    // 2. Calculate Action Policy ID (Permission + Action)
+    const actionPolicyId = keccak256(encodePacked(['bytes32', 'bytes32'], [permissionId, actionId]));
+
+    // 3. Calculate Config ID (Account + Policy ID)
+    const configId = keccak256(encodePacked(['address', 'bytes32'], [account, actionPolicyId]));
+
+    return configId;
 };
