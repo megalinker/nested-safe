@@ -83,7 +83,8 @@ export const createAllowanceSessionStruct = (
     amount: bigint,
     startUnix: number,
     salt: Hex,
-    refillInterval: number
+    refillInterval: number,
+    allowanceName: string
 ) => {
     if (tokenAddress === "0x0000000000000000000000000000000000000000") {
         throw new Error("Recurring Allowances currently only support ERC20 tokens (USDC), not Native ETH.");
@@ -95,12 +96,21 @@ export const createAllowanceSessionStruct = (
 
     const policies = [];
 
-    // Use variable from config
     policies.push({
         policy: PERIODIC_ERC20_POLICY as Address,
         initData: encodeAbiParameters(
-            [{ type: 'address[]' }, { type: 'uint256[]' }, { type: 'uint256[]' }],
-            [[tokenAddress], [amount], [BigInt(refillInterval)]]
+            [
+                { type: 'address[]' }, 
+                { type: 'uint256[]' }, 
+                { type: 'uint256[]' },
+                { type: 'string[]' }
+            ],
+            [
+                [tokenAddress], 
+                [amount], 
+                [BigInt(refillInterval)],
+                [allowanceName]
+            ]
         )
     });
 

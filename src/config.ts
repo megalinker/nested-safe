@@ -28,8 +28,8 @@ export const USDC_ADDRESS = NETWORK === 'mainnet'
 
 // Periodic Policy (Provided by you for Mainnet)
 export const PERIODIC_ERC20_POLICY = NETWORK === 'mainnet'
-  ? "0xD84733336DcfB4628f1897d181d38b5D71f8aE43"
-  : "0x42e031a5efC778D3f90b3eB26F13d9784e55aA55";
+  ? "0x42e031a5efC778D3f90b3eB26F13d9784e55aA55"
+  : "0x6913e84d824C9425aBf3817103107453612Dab5e";
 
 // Constants common to both (Safe/Rhinestone Singletons)
 export const SAFE_7579_ADAPTER_ADDRESS = "0x7579f2AD53b01c3D8779Fe17928e0D48885B0003";

@@ -31,7 +31,17 @@ import { createAllowanceSessionStruct, createSessionStruct } from "./utils/smart
 import { getPermissionId, getSafe7579SessionAccount } from "./utils/safe7579";
 import { createPasskey, loadPasskeys, storePasskey } from "./utils/passkeys";
 import { executePasskeyTransaction, getSafeInfo } from "./utils/safePasskeyClient";
-import { ACTIVE_CHAIN, BUNDLER_URL, NETWORK, RPC_URL, USDC_ADDRESS } from "./config";
+import {
+  ACTIVE_CHAIN,
+  BUNDLER_URL,
+  NETWORK,
+  RPC_URL,
+  USDC_ADDRESS,
+  PERIODIC_ERC20_POLICY,
+  SMART_SESSIONS_VALIDATOR_ADDRESS,
+  SAFE_7579_ADAPTER_ADDRESS,
+  MULTI_SEND_ADDRESS
+} from "./config";
 
 // --- LOGGING HELPER ---
 const consoleLog = (stage: string, message: string, data?: any) => {
@@ -81,10 +91,6 @@ const SAFE_TX_SERVICE_URL = NETWORK === 'mainnet'
   ? "https://safe-transaction-base.safe.global/api/v1"
   : "https://safe-transaction-base-sepolia.safe.global/api/v1";
 
-// --- RHINESTONE ADDRESSES ---
-const SAFE_7579_ADAPTER_ADDRESS = "0x7579f2AD53b01c3D8779Fe17928e0D48885B0003";
-const SMART_SESSIONS_VALIDATOR_ADDRESS = "0x00000000008bdaba73cd9815d79069c247eb4bda";
-
 // Storage slot for Safe Fallback Handler
 const FALLBACK_HANDLER_STORAGE_SLOT = "0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5";
 
@@ -128,7 +134,12 @@ const ENABLE_SESSIONS_ABI = parseAbi([
   "function removeSession(bytes32 permissionId) external"
 ]);
 
-const MULTI_SEND_ADDRESS = "0x38869bf66a61cF6bDB996A6aE40D5853Fd43B526";
+// --- PERIODIC POLICY V3 ABI ---
+const PERIODIC_POLICY_ABI = parseAbi([
+  "struct AllowanceInfo { bytes32 configId; address token; uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isActive; }",
+  "function getAllowances(address account) external view returns (AllowanceInfo[] memory)",
+  "function revokeAllowance(bytes32 configId, address token) external"
+]);
 
 const MULTI_SEND_ABI = parseAbi([
   "function multiSend(bytes transactions) external"
@@ -175,6 +186,7 @@ const Icons = {
   Bug: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="4" ry="4" /><path d="M16 3v5" /><path d="M8 3v5" /><path d="M3 11h18" /></svg>,
   Key: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="7.5" cy="15.5" r="5.5" /><path d="m21 2-9.6 9.6" /><path d="m15.5 7.5 3 3L22 7l-3-3" /></svg>,
   Settings: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
+  LogOut: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
 };
 
 // --- TYPES ---
@@ -262,12 +274,6 @@ const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh,
             </button>
           )}
         </div>
-
-        {type === 'nested' && isSelected && onRefresh && (
-          <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onRefresh(); }} title="Refresh Balance">
-            <Icons.Refresh />
-          </button>
-        )}
       </div>
 
       <div className="safe-meta">
@@ -350,10 +356,15 @@ const App: React.FC = () => {
 
   // Allowances State
   const [allowanceAmount, setAllowanceAmount] = useState("");
+  const [allowanceName, setAllowanceName] = useState(""); // NEW
   const [allowanceStart, setAllowanceStart] = useState("");
   const [allowanceInterval, setAllowanceInterval] = useState<string>("1");
   const [allowanceUnit, setAllowanceUnit] = useState<'minutes' | 'hours' | 'days'>('minutes');
   const [myAllowances, setMyAllowances] = useState<any[]>([]);
+
+  // Scan / Audit State
+  const [zombieAllowances, setZombieAllowances] = useState<any[]>([]);
+  const [isScanning, setIsScanning] = useState(false);
 
   const [signerMode, setSignerMode] = useState<'main' | 'session'>('main');
   const [activeSession, setActiveSession] = useState<any | null>(null);
@@ -442,22 +453,13 @@ const App: React.FC = () => {
   const isCurrentSafeOwner = useMemo(() => {
     // Debugging the ownership check
     if (!selectedSafeAddr) {
-      console.log("OWNER-CHECK: Failed. No selectedParentAddr.");
       return false;
     }
     if (nestedOwners.length === 0) {
-      console.log("OWNER-CHECK: Failed. Nested owners list is empty.");
       return false;
     }
 
     const match = nestedOwners.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
-
-    console.log(`OWNER-CHECK: ${match ? "PASS" : "FAIL"}`, {
-      parent: selectedSafeAddr,
-      nestedOwners: nestedOwners,
-      matchFound: match
-    });
-
     return match;
   }, [selectedSafeAddr, nestedOwners]);
 
@@ -499,6 +501,17 @@ const App: React.FC = () => {
       addLog(`Wallet connection failed: ${e.message}`, "error");
       return null;
     }
+  };
+
+  const handleLogout = () => {
+    // Clear active session state
+    setWalletClient(null);
+    setEoaAddress("");
+    setActivePasskey(null);
+    setLoginMethod(null);
+    // Note: We deliberately do NOT clear 'mySafes' or 'myNestedSafes' 
+    // so the user retains their list of Safes when they log back in.
+    addLog("Logged out. Please sign in again.", "info");
   };
 
   const fetchParentOwners = async (address: string) => {
@@ -882,14 +895,9 @@ const App: React.FC = () => {
         ? `0x${rawFallback.slice(-40)}`.toLowerCase()
         : "0x";
 
-      console.log("--- 7579 Status Check ---");
-      console.log("Module Enabled:", isModuleEnabled);
-      console.log("Fallback Match:", currentFallback === adapterAddr);
-
       const batch: { to: string; value: bigint; data: string; operation: number }[] = [];
 
       // 2. ONLY ADD SETUP STEPS IF THE MODULE IS NOT ENABLED
-      // If isModuleEnabled is true, initializeAccount has already been called and MUST NOT be called again.
       if (!isModuleEnabled) {
         addLog("Bundling first-time 7579 setup...", "info");
 
@@ -944,10 +952,8 @@ const App: React.FC = () => {
 
       // 4. PROPOSE
       if (batch.length > 1) {
-        // MultiSend if we have setup steps + enableSession
         await proposeTransaction(MULTI_SEND_ADDRESS, 0n, encodeMultiSend(batch), `Setup 7579 + Enable ${selectedToken} Session`, 0, 1);
       } else {
-        // Single call if only enableSession is needed
         await proposeTransaction(SMART_SESSIONS_VALIDATOR_ADDRESS, 0n, batch[0].data as Hex, `Enable ${selectedToken} Session`, 0, 0);
       }
 
@@ -975,13 +981,6 @@ const App: React.FC = () => {
     setLoading(true);
     try {
       const { privateKey, session, target, amount, token, permissionId: storedId } = JSON.parse(stored);
-
-      consoleLog("SESSION-EXEC", "Retrieved Session from Storage", {
-        storedId,
-        target,
-        amount,
-        token
-      });
 
       const sessionOwner = privateKeyToAccount(privateKey);
       const currentId = getPermissionId(session);
@@ -1015,7 +1014,6 @@ const App: React.FC = () => {
       if (token === 'USDC') {
         const decimals = TOKENS.USDC.decimals;
         const value = parseUnits(amount, decimals);
-        // Build ERC20 Transfer Call
         const calldata = encodeFunctionData({
           abi: ERC20_ABI,
           functionName: "transfer",
@@ -1028,7 +1026,6 @@ const App: React.FC = () => {
           data: calldata
         };
       } else {
-        // Native ETH Transfer
         executionPayload = {
           to: target as Address,
           value: parseEther(amount),
@@ -1036,11 +1033,7 @@ const App: React.FC = () => {
         };
       }
 
-      consoleLog("SESSION-EXEC", "Sending UserOp (Execution)", executionPayload);
-
       const hash = await smartClient.sendTransaction(executionPayload);
-
-      consoleLog("SESSION-EXEC", "Execution Result", { hash });
 
       addLog(`Schedule Executed! TX: ${hash}`, "success");
       handleClearSchedule();
@@ -1075,15 +1068,12 @@ const App: React.FC = () => {
       setLoading(true);
       addLog("Proposing session revocation...", "info");
 
-      // 1. Encode the call to the Validator
       const data = encodeFunctionData({
         abi: ENABLE_SESSIONS_ABI,
         functionName: "removeSession",
         args: [permissionId as Hex]
       });
 
-      // 2. Propose the transaction (Nested Safe calls the Validator)
-      // We send this to the queue just like a transfer or owner change
       await proposeTransaction(
         SMART_SESSIONS_VALIDATOR_ADDRESS,
         0n,
@@ -1100,6 +1090,8 @@ const App: React.FC = () => {
     }
   };
 
+  // --- ALLOWANCE LOGIC ---
+
   const handleCreateAllowance = async () => {
     if (!allowanceAmount || !allowanceStart || !selectedNestedSafeAddr) {
       addLog("Please fill in amount and start date", "error");
@@ -1114,7 +1106,7 @@ const App: React.FC = () => {
     setLoading(true);
 
     try {
-      // --- 1. SETUP / CHECKS (Same as Schedule) ---
+      // --- 1. SETUP / CHECKS ---
       addLog(`Checking on-chain status for ${selectedNestedSafeAddr.slice(0, 8)}...`, "info");
 
       const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
@@ -1186,6 +1178,7 @@ const App: React.FC = () => {
 
       const amountRaw = parseUnits(allowanceAmount, 6); // Assuming USDC
       const tokenAddr = USDC_ADDRESS as Address;
+      const finalName = allowanceName || "Untitled Budget";
 
       const session = createAllowanceSessionStruct(
         sessionOwner.address,
@@ -1193,7 +1186,8 @@ const App: React.FC = () => {
         amountRaw,
         startUnix,
         salt,
-        refillSeconds
+        refillSeconds,
+        finalName // Pass name for on-chain storage
       );
 
       const enableData = encodeFunctionData({
@@ -1210,7 +1204,7 @@ const App: React.FC = () => {
       const permissionId = getPermissionId(session);
 
       // --- 3. PROPOSE ---
-      const description = `Enable ${allowanceAmount} ${selectedToken} every ${allowanceInterval} ${allowanceUnit}`;
+      const description = `Enable ${finalName}: ${allowanceAmount} ${selectedToken}`;
 
       if (batch.length > 1) {
         await proposeTransaction(MULTI_SEND_ADDRESS, 0n, encodeMultiSend(batch), `Setup 7579 + ${description}`, 0, 1);
@@ -1221,6 +1215,7 @@ const App: React.FC = () => {
       const newAllowance = {
         permissionId,
         privateKey: pk,
+        name: finalName,
         amount: allowanceAmount,
         token: selectedToken,
         start: allowanceStart,
@@ -1234,10 +1229,89 @@ const App: React.FC = () => {
       localStorage.setItem("my_allowances", JSON.stringify(updated));
 
       addLog("Recurring Budget proposed!", "success");
+      setAllowanceName("");
       setActiveTab('queue');
 
     } catch (e: any) {
       addLog(`Creation failed: ${e.message}`, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleScanAllowances = async () => {
+    if (!selectedNestedSafeAddr) return;
+    setIsScanning(true);
+    setZombieAllowances([]);
+
+    try {
+      addLog("Scanning blockchain for active allowances...", "info");
+      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
+
+      // Call the View Function on the V3 Policy
+      const onChainAllowances = await publicClient.readContract({
+        address: PERIODIC_ERC20_POLICY as Address,
+        abi: PERIODIC_POLICY_ABI,
+        functionName: "getAllowances",
+        args: [selectedNestedSafeAddr as Address]
+      });
+
+      // --- ADD LOG HERE ---
+      console.log("🔍 RAW ALLOWANCES FROM CHAIN:", onChainAllowances);
+      // --------------------
+
+      consoleLog("SCAN", "Raw Data", onChainAllowances); // (This uses the helper I added earlier)
+
+      const zombies: any[] = [];
+
+      for (const allowance of onChainAllowances) {
+        // Simple heuristic to detect if we own it: match name and amount
+        const isControllable = myAllowances.some(local =>
+          local.amount === formatUnits(allowance.limit, 6) &&
+          local.name === allowance.name
+        );
+
+        zombies.push({
+          ...allowance,
+          formattedLimit: formatUnits(allowance.limit, 6),
+          formattedSpent: formatUnits(allowance.amountSpent, 6),
+          isControllable
+        });
+      }
+
+      setZombieAllowances(zombies);
+      addLog(`Scan complete. Found ${zombies.length} allowances.`, "success");
+
+    } catch (e: any) {
+      addLog(`Scan failed: ${e.message}. Is the module enabled?`, "error");
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const handleCleanUpAllowance = async (configId: string, tokenAddress: string) => {
+    if (!selectedNestedSafeAddr) return;
+    if (!window.confirm("This will permanently disable this allowance record on-chain. Continue?")) return;
+
+    setLoading(true);
+    try {
+      const data = encodeFunctionData({
+        abi: PERIODIC_POLICY_ABI,
+        functionName: "revokeAllowance",
+        args: [configId as Hex, tokenAddress as Address]
+      });
+
+      await proposeTransaction(
+        PERIODIC_ERC20_POLICY,
+        0n,
+        data,
+        `Clean up Allowance Record (${configId.slice(0, 6)}...)`
+      );
+
+      addLog("Cleanup proposal created! Check Queue.", "success");
+      setActiveTab('queue');
+    } catch (e: any) {
+      addLog(`Cleanup failed: ${e.message}`, "error");
     } finally {
       setLoading(false);
     }
@@ -1251,7 +1325,6 @@ const App: React.FC = () => {
     setLoading(true);
     try {
       // 1. Encode the call to removeSession
-      // The Nested Safe calls the Smart Session Validator contract
       const data = encodeFunctionData({
         abi: ENABLE_SESSIONS_ABI,
         functionName: "removeSession",
@@ -1267,7 +1340,6 @@ const App: React.FC = () => {
       );
 
       // 3. Cleanup Local State immediately
-      // (The key won't work on-chain once the tx executes, so we can hide it now)
       const updated = myAllowances.filter(a => a.permissionId !== allowance.permissionId);
       setMyAllowances(updated);
       localStorage.setItem("my_allowances", JSON.stringify(updated));
@@ -1333,48 +1405,27 @@ const App: React.FC = () => {
       const hash = await smartClient.sendTransaction(tx);
       addLog(`Success! UserOp Hash: ${hash}`, "success");
 
-      // 1. Immediately switch the UI back to the Main Account signer
       setSignerMode('main');
       setActiveSession(null);
 
-      // 2. Update the local allowance list (Decrement usage or remove)
+      // Update local usage if not recurring (though this demo focuses on recurring)
       const updatedAllowances = myAllowances.map(al => {
-        if (al.permissionId === permissionId) {
-          // If it's recurring, don't change anything
-          if (al.type === 'recurring') return al;
-
-          // If one-time, decrement usage
+        if (al.permissionId === permissionId && al.type !== 'recurring') {
           const currentUsage = parseInt(al.usage || "1");
           return { ...al, usage: (currentUsage - 1).toString() };
         }
         return al;
-      }).filter(al => {
-        // Keep the key if:
-        // 1. It is recurring (usage 0 is fine here)
-        // 2. OR it has usage remaining (> 0)
-        if (al.type === 'recurring') return true;
-        return parseInt(al.usage) > 0;
-      });
+      }).filter(al => al.type === 'recurring' || parseInt(al.usage) > 0);
 
-      // 3. Save updated list
       setMyAllowances(updatedAllowances);
       localStorage.setItem("my_allowances", JSON.stringify(updatedAllowances));
 
-      const isRecurring = activeSession.type === 'recurring';
-      addLog(isRecurring
-        ? "Recurring allowance used. Spending limit updated on-chain."
-        : "One-time key used. Usage count reduced.", "info");
-
-      // 4. Refresh balances
       setTimeout(() => fetchData(selectedNestedSafeAddr), 4000);
 
     } catch (e: any) {
-      console.error(e); // Keep full log in console for debugging
-
-      // Use the new helper for the UI log
+      console.error(e);
       const niceMessage = formatError(e);
       addLog(niceMessage, "error");
-
     } finally {
       setLoading(false);
     }
@@ -1396,7 +1447,6 @@ const App: React.FC = () => {
     const targetNonce = Number(currentNonce) + nonceOffset;
 
     try {
-      // Try on-chain calculation first (works for deployed safes)
       const hash = await publicClient.readContract({
         address: selectedNestedSafeAddr as Hex,
         abi: SAFE_ABI,
@@ -1405,14 +1455,8 @@ const App: React.FC = () => {
       });
       return { hash, nonce: targetNonce };
     } catch (e) {
-      consoleLog("TX-HASH", "On-chain hash calc failed. Calculating off-chain...");
-
-      // Fallback: Calculate Hash Off-chain (EIP-712) for Counterfactual Safes
-      const domain = {
-        chainId: ACTIVE_CHAIN.id,
-        verifyingContract: selectedNestedSafeAddr as Hex,
-      };
-
+      // Fallback: Off-chain hash (EIP-712) for counterfactual
+      const domain = { chainId: ACTIVE_CHAIN.id, verifyingContract: selectedNestedSafeAddr as Hex };
       const types = {
         SafeTx: [
           { name: 'to', type: 'address' },
@@ -1427,30 +1471,17 @@ const App: React.FC = () => {
           { name: 'nonce', type: 'uint256' },
         ],
       };
-
       const message = {
-        to: to as Hex,
-        value: val,
-        data: data,
-        operation: operation,
-        safeTxGas: 0n,
-        baseGas: 0n,
-        gasPrice: 0n,
+        to: to as Hex, value: val, data: data, operation, safeTxGas: 0n, baseGas: 0n, gasPrice: 0n,
         gasToken: "0x0000000000000000000000000000000000000000" as Hex,
         refundReceiver: "0x0000000000000000000000000000000000000000" as Hex,
         nonce: BigInt(targetNonce),
       };
-
-      const hash = await hashTypedData({
-        domain,
-        types,
-        primaryType: 'SafeTx',
-        message
-      });
-
+      const hash = await hashTypedData({ domain, types, primaryType: 'SafeTx', message });
       return { hash, nonce: targetNonce };
     }
   };
+
   const proposeTransaction = async (to: string, val: bigint, data: Hex, description: string, nonceOffset = 0, operation: 0 | 1 = 0) => {
     try {
       setLoading(true);
@@ -1462,7 +1493,7 @@ const App: React.FC = () => {
         to,
         value: val.toString(),
         data,
-        operation, // Store operation type
+        operation,
         nonce,
         description
       };
@@ -1492,8 +1523,6 @@ const App: React.FC = () => {
 
     try {
       setLoading(true);
-
-      // 1. Prepare the call data for the Nested Safe
       const approveData = encodeFunctionData({
         abi: SAFE_ABI,
         functionName: "approveHash",
@@ -1502,20 +1531,16 @@ const App: React.FC = () => {
 
       let txHash;
 
-      // 2. Branch based on Login Method
       if (loginMethod === 'phantom' && walletClient) {
-        // --- OPTION A: PHANTOM (Permissionless.js) ---
-
         const parent = mySafes.find(s => s.address === selectedSafeAddr);
         if (!parent) throw new Error("Parent Safe info not found");
 
         const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
         const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
-        // Initialize the Parent Safe Smart Account
         const safeAccount = await toSafeSmartAccount({
           client: publicClient,
-          owners: [walletClient], // Phantom Signer
+          owners: [walletClient],
           entryPoint: { address: entryPoint07Address, version: "0.7" },
           version: "1.4.1",
           address: parent.address as Hex,
@@ -1530,7 +1555,6 @@ const App: React.FC = () => {
           userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
         });
 
-        // Send transaction from Parent Safe -> Nested Safe
         txHash = await smartClient.sendTransaction({
           to: selectedNestedSafeAddr as Hex,
           value: 0n,
@@ -1538,25 +1562,17 @@ const App: React.FC = () => {
         });
 
       } else if (loginMethod === 'passkey' && activePasskey) {
-        // --- OPTION B: PASSKEY (Safe SDK / Relay Kit) ---
-
-        // Construct the transaction object for the Relay Kit
         const txData = {
           to: selectedNestedSafeAddr,
           value: '0',
           data: approveData
         };
-
-        // Use our helper to sign (WebAuthn) and submit (Pimlico)
         txHash = await executePasskeyTransaction(activePasskey, [txData]);
-
       } else {
-        throw new Error("No active wallet or passkey found.");
+        throw new Error("No active wallet found.");
       }
 
       addLog(`Approved Hash! TX: ${txHash}`, "success");
-
-      // Refresh the queue after a short delay to allow indexing
       setTimeout(() => handleRefreshQueue(), 4000);
 
     } catch (e: any) {
@@ -1589,9 +1605,7 @@ const App: React.FC = () => {
             args: [owner as Hex, tx.hash as Hex]
           });
           if (isApproved === 1n) approvedBy.push(owner);
-        } catch (e) {
-          // Ignore read errors (undeployed safe)
-        }
+        } catch (e) { }
       }
       newMap[tx.hash] = approvedBy;
     }
@@ -1605,21 +1619,14 @@ const App: React.FC = () => {
       setLoading(true);
       const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
 
-      // 1. Check if Nested Safe is deployed
       const code = await publicClient.getBytecode({ address: selectedNestedSafeAddr as Hex });
       const isDeployed = code && code !== "0x";
-
-      // 2. Construct Signatures
-      // We need signatures for the threshold. 
-      // Since we are the Parent Safe (Owner), we can provide a Pre-Validated Signature (Type 1) for ourselves.
 
       const sortedOwners = [...nestedOwners].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
       let signatures = "0x";
 
       for (const owner of sortedOwners) {
         let isApproved = 0n;
-
-        // Condition A: On-chain Approval (for other owners or deployed safe)
         if (isDeployed) {
           try {
             isApproved = await publicClient.readContract({
@@ -1628,22 +1635,18 @@ const App: React.FC = () => {
               functionName: "approvedHashes",
               args: [owner as Hex, tx.hash as Hex]
             });
-          } catch (e) { /* Ignore read errors */ }
+          } catch (e) { }
         }
 
-        // Condition B: Implicit Approval (Current Signer/Parent Safe)
-        // If the owner is US (the Parent Safe), we are executing the tx, so we implicitly sign it.
         const isCurrentParent = owner.toLowerCase() === selectedSafeAddr.toLowerCase();
 
         if (isApproved === 1n || isCurrentParent) {
-          // Pre-Validated Signature Format (r=Owner, s=0, v=1)
           signatures += pad(owner as Hex, { size: 32 }).slice(2);
           signatures += pad("0x0", { size: 32 }).slice(2);
           signatures += "01";
         }
       }
 
-      // 3. Prepare Execution Data
       const execData = encodeFunctionData({
         abi: SAFE_ABI,
         functionName: "execTransaction",
@@ -1655,19 +1658,16 @@ const App: React.FC = () => {
         ]
       });
 
-      // 4. Build Batch (Deploy + Execute)
       const txsToExecute = [];
 
       if (!isDeployed) {
         const nestedSafeInfo = myNestedSafes.find(s => s.address === selectedNestedSafeAddr);
         if (nestedSafeInfo) {
           addLog("Nested Safe is undeployed. Adding deployment to batch...", "info");
-
           const provider = loginMethod === 'phantom'
             ? ((window as any).phantom?.ethereum || (window as any).ethereum)
             : PUBLIC_RPC;
 
-          // We use selectedSafeAddr as signer just to satisfy the SDK init requirements for prediction
           const protocolKit = await Safe.init({
             provider,
             signer: selectedSafeAddr,
@@ -1694,7 +1694,6 @@ const App: React.FC = () => {
 
       let txHash;
 
-      // 5. Submit Batch
       if (loginMethod === 'phantom' && walletClient) {
         const parent = mySafes.find(s => s.address === selectedSafeAddr);
         if (!parent) throw new Error("Parent Safe info not found");
@@ -1726,7 +1725,6 @@ const App: React.FC = () => {
 
       addLog(`Execution Sent! TX: ${txHash}`, "success");
 
-      // 6. Cleanup Queue
       const newQueue = queuedTxs.filter(t => t.hash !== tx.hash);
       setQueuedTxs(newQueue);
       queueRef.current = newQueue;
@@ -1744,10 +1742,11 @@ const App: React.FC = () => {
     }
   };
 
-  const handleAddOwner = async () => {
-    if (!newOwnerInput) return;
-    const data = encodeFunctionData({ abi: SAFE_ABI, functionName: "addOwnerWithThreshold", args: [newOwnerInput as Hex, 1n] });
-    await proposeTransaction(selectedNestedSafeAddr, 0n, data, `Add Owner: ${newOwnerInput.slice(0, 6)}...`, 0, 0);
+  const handleAddOwner = async (addressOverride?: string) => {
+    const ownerToAdd = addressOverride || newOwnerInput;
+    if (!ownerToAdd) return;
+    const data = encodeFunctionData({ abi: SAFE_ABI, functionName: "addOwnerWithThreshold", args: [ownerToAdd as Hex, 1n] });
+    await proposeTransaction(selectedNestedSafeAddr, 0n, data, `Add Owner: ${ownerToAdd.slice(0, 6)}...`, 0, 0);
     setNewOwnerInput("");
   };
 
@@ -1827,7 +1826,6 @@ const App: React.FC = () => {
               ) : (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <p className="safe-address">{eoaAddress}</p>
-                  <button className="icon-btn" onClick={() => window.location.reload()} title="Logout"><Icons.Refresh /></button>
                 </div>
               )}
             </div>
@@ -1895,11 +1893,7 @@ const App: React.FC = () => {
                       addLog(`Signer switched to Allowance Key: ${al.permissionId.slice(0, 8)}`, 'info');
                     }}
                   >
-                    🔑 Key: {al.amount} {al.token}
-                    {al.type === 'recurring'
-                      ? <span style={{ opacity: 0.7, marginLeft: '4px' }}> (Reset: {al.interval})</span>
-                      : <span style={{ opacity: 0.7, marginLeft: '4px' }}> ({al.usage} left)</span>
-                    }
+                    🔑 {al.name || "Key"} ({al.amount} {al.token})
                   </button>
                 ))}
               </div>
@@ -1936,10 +1930,18 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            <div style={{ marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
+            <div style={{ marginTop: '2rem', paddingTop: '1rem', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <button
                 className="action-btn secondary small"
-                style={{ width: '100%', opacity: 0.6, fontSize: '0.75rem' }}
+                style={{ width: '100%', justifyContent: 'center' }}
+                onClick={handleLogout}
+              >
+                <Icons.LogOut /> Logout
+              </button>
+
+              <button
+                className="action-btn secondary small"
+                style={{ width: '100%', opacity: 0.6, fontSize: '0.75rem', justifyContent: 'center' }}
                 onClick={() => {
                   if (window.confirm("This will clear all local safes and passkeys. Continue?")) {
                     localStorage.clear();
@@ -2138,6 +2140,12 @@ const App: React.FC = () => {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                     <TokenSelector />
 
+                    {/* NEW: Allowance Name Input */}
+                    <div className="input-group">
+                      <label>Label (e.g. "Nanny", "Gym")</label>
+                      <input type="text" value={allowanceName} onChange={e => setAllowanceName(e.target.value)} placeholder="Untitled Budget" />
+                    </div>
+
                     <div className="input-group">
                       <label>Spending Amount ({selectedToken})</label>
                       <input type="number" value={allowanceAmount} onChange={e => setAllowanceAmount(e.target.value)} placeholder="0.0" />
@@ -2181,7 +2189,7 @@ const App: React.FC = () => {
                     </button>
                   </div>
 
-                  <div className="section-label" style={{ marginTop: '2.5rem' }}>Active Budgets</div>
+                  <div className="section-label" style={{ marginTop: '2.5rem' }}>Active Budgets (Local)</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     {myAllowances.length === 0 ? (
                       <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>No active budgets.</div>
@@ -2189,7 +2197,10 @@ const App: React.FC = () => {
                       myAllowances.map((al, i) => (
                         <div key={i} className="owner-row" style={{ borderLeft: '3px solid var(--primary)' }}>
                           <div style={{ flex: 1 }}>
-                            <div style={{ fontWeight: '600' }}>
+                            <div style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--primary)' }}>
+                              {al.name || "Untitled"}
+                            </div>
+                            <div style={{ fontWeight: '500' }}>
                               {al.amount} {al.token}
                               <span style={{ fontSize: '0.75rem', color: 'var(--success)', marginLeft: '6px' }}>(Resets every {al.interval})</span>
                             </div>
@@ -2223,6 +2234,69 @@ const App: React.FC = () => {
                       ))
                     )}
                   </div>
+
+                  {/* NEW: On-Chain Audit Section */}
+                  <hr style={{ margin: '2rem 0', borderColor: 'var(--border)' }} />
+                  <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>On-Chain Audit</span>
+                    <button className="action-btn secondary small" onClick={handleScanAllowances} disabled={isScanning || !selectedNestedSafeAddr}>
+                      {isScanning ? "Scanning..." : <><Icons.Refresh /> Sync from Chain</>}
+                    </button>
+                  </div>
+
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+                    This checks the smart contract directly. It reveals "Zombie" allowances that may exist even if you lost the keys.
+                  </p>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {zombieAllowances.length === 0 && !isScanning && (
+                      <div style={{ textAlign: 'center', padding: '1rem', border: '1px dashed var(--border)', borderRadius: '8px', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                        Click "Sync" to fetch data from the blockchain.
+                      </div>
+                    )}
+
+                    {zombieAllowances.map((z, i) => (
+                      <div key={i} className="owner-row" style={{
+                        borderLeft: !z.isActive
+                          ? '3px solid var(--text-secondary)'
+                          : z.isControllable
+                            ? '3px solid var(--success)'
+                            : '3px solid #f59e0b',
+                        background: 'var(--surface-1)',
+                        opacity: !z.isActive ? 0.6 : 1
+                      }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontWeight: 'bold' }}>{z.name}</span>
+                            {!z.isActive && <span className="header-badge" style={{ background: '#52525b' }}>ARCHIVED</span>}
+                            {z.isActive && !z.isControllable && <span className="header-badge" style={{ background: '#f59e0b', color: 'black' }}>READ ONLY</span>}
+                          </div>
+
+                          <div style={{ fontSize: '0.85rem', marginTop: '4px' }}>
+                            <span style={{ color: 'var(--text-secondary)' }}>Spent:</span> {z.formattedSpent} / {z.formattedLimit} USDC
+                          </div>
+
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px', fontFamily: 'monospace' }}>
+                            ConfigID: {z.configId.slice(0, 10)}...
+                          </div>
+                        </div>
+
+                        {/* ACTION BUTTONS FOR AUDIT */}
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          {z.isActive && (
+                            <button
+                              className="icon-btn"
+                              title="Clean Up (Disable On-Chain)"
+                              onClick={() => handleCleanUpAllowance(z.configId, z.token)}
+                              disabled={loading || !isCurrentSafeOwner}
+                            >
+                              <Icons.Bug />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -2238,21 +2312,14 @@ const App: React.FC = () => {
                     <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>No pending transactions for this Safe.</div>
                   ) : (
                     currentSafeQueue.filter(t => t.nonce >= nestedNonce).sort((a, b) => a.nonce - b.nonce).map(tx => {
-                      // 1. Get the list of people who signed this specific TX from the map
                       const approvals = approvalsMap[tx.hash] || [];
-
-                      // 2. Check if the *current* user has signed it
                       const hasSigned = approvals.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
-
-                      // 3. Calculate status
                       const signedCount = approvals.length;
-                      const readyToExec = signedCount >= nestedThreshold; // Alternatively: (signedCount + (hasSigned ? 0 : 1)) >= threshold if you want to allow instant execution
+                      const readyToExec = signedCount >= nestedThreshold;
                       const isNext = tx.nonce === nestedNonce;
 
                       return (
                         <div key={tx.hash} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: '8px', padding: '1rem', marginBottom: '1rem', opacity: isNext ? 1 : 0.6 }}>
-
-                          {/* Header: Description & Nonce Badge */}
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '10px' }}>
                             <div style={{ fontWeight: '600' }}>{tx.description}</div>
                             <div className="header-badge" style={{ background: readyToExec ? 'var(--success)' : 'var(--surface-3)', color: 'white' }}>
@@ -2260,12 +2327,10 @@ const App: React.FC = () => {
                             </div>
                           </div>
 
-                          {/* Hash */}
                           <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem', fontFamily: 'monospace' }}>
                             Hash: {tx.hash.slice(0, 10)}...{tx.hash.slice(-8)}
                           </div>
 
-                          {/* --- NEW: Approvals Display --- */}
                           <div style={{ background: 'var(--surface-2)', padding: '10px', borderRadius: '6px', marginBottom: '1rem' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontSize: '0.8rem' }}>
                               <span style={{ color: 'var(--text-secondary)' }}>Confirmations</span>
@@ -2297,23 +2362,18 @@ const App: React.FC = () => {
                               )}
                             </div>
                           </div>
-                          {/* ----------------------------- */}
 
-                          {/* Actions */}
                           <div style={{ display: 'flex', gap: '10px' }}>
                             {!hasSigned && (
                               <button className="action-btn secondary" onClick={() => approveTxHash(tx.hash)} disabled={loading || !isCurrentSafeOwner}>
                                 <Icons.Check /> Sign (Approve)
                               </button>
                             )}
-
-                            {/* Logic: Show Execute if we have enough sigs OR if we have (threshold - 1) sigs and WE are about to sign & execute implicitly */}
                             {(readyToExec || (!hasSigned && (signedCount + 1) >= nestedThreshold)) && isNext && (
                               <button className="action-btn" onClick={() => executeQueuedTx(tx)} disabled={loading || !isCurrentSafeOwner}>
                                 Execute Transaction
                               </button>
                             )}
-
                             {(!isNext) && <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', alignSelf: 'center' }}>Waiting for previous nonce...</span>}
                           </div>
                         </div>
@@ -2335,11 +2395,31 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   ))}
+
+                  <div className="section-label" style={{ marginTop: '1.5rem' }}>Add from my Parent Safes</div>
+                  <div className="quick-add-container">
+                    {mySafes
+                      .filter(safe => !nestedOwners.some(o => o.toLowerCase() === safe.address.toLowerCase()))
+                      .map(safe => (
+                        <button
+                          key={safe.address}
+                          className="chip"
+                          onClick={() => handleAddOwner(safe.address)}
+                          disabled={loading || !isCurrentSafeOwner}
+                        >
+                          <Icons.Plus /> Add {safe.name}
+                        </button>
+                      ))}
+                    {mySafes.every(safe => nestedOwners.some(o => o.toLowerCase() === safe.address.toLowerCase())) && (
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>All your safes are already owners.</span>
+                    )}
+                  </div>
+
                   <div className="input-group" style={{ marginTop: '1rem' }}>
                     <label>Add External Owner Address</label>
                     <div style={{ display: 'flex', gap: '10px' }}>
                       <input value={newOwnerInput} onChange={e => setNewOwnerInput(e.target.value)} placeholder="0x..." />
-                      <button className="action-btn small" onClick={handleAddOwner} disabled={loading || !isCurrentSafeOwner}>Propose Add</button>
+                      <button className="action-btn small" onClick={() => handleAddOwner()} disabled={loading || !isCurrentSafeOwner}>Propose Add</button>
                     </div>
                   </div>
                   <hr style={{ margin: '2rem 0', borderColor: 'var(--border)' }} />
