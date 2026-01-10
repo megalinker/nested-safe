@@ -136,8 +136,8 @@ const ENABLE_SESSIONS_ABI = parseAbi([
 
 // --- PERIODIC POLICY V3 ABI ---
 const PERIODIC_POLICY_ABI = parseAbi([
-  "struct TokenPolicyData { uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isDeleted; }", // Return struct
-  "struct AllowanceInfo { bytes32 configId; address token; uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isActive; }",
+  "struct TokenPolicyData { address holder; uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isDeleted; }",
+  "struct AllowanceInfo { bytes32 configId; address token; address holder; uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isActive; }",
   "function getAllowances(address account) external view returns (AllowanceInfo[] memory)",
   "function revokeAllowance(bytes32 configId, address token) external",
   "function getAllowance(address account, bytes32 configId, address token) external view returns (TokenPolicyData memory)"
@@ -357,8 +357,9 @@ const App: React.FC = () => {
   const [newThresholdInput, setNewThresholdInput] = useState<number>(1);
 
   // Allowances State
+  const [allowanceHolder, setAllowanceHolder] = useState<string>("");
   const [allowanceAmount, setAllowanceAmount] = useState("");
-  const [allowanceName, setAllowanceName] = useState(""); // NEW
+  const [allowanceName, setAllowanceName] = useState("");
   const [allowanceStart, setAllowanceStart] = useState("");
   const [allowanceInterval, setAllowanceInterval] = useState<string>("1");
   const [allowanceUnit, setAllowanceUnit] = useState<'minutes' | 'hours' | 'days'>('minutes');
@@ -1095,8 +1096,8 @@ const App: React.FC = () => {
   // --- ALLOWANCE LOGIC ---
 
   const handleCreateAllowance = async () => {
-    if (!allowanceAmount || !allowanceStart || !selectedNestedSafeAddr) {
-      addLog("Please fill in amount and start date", "error");
+    if (!allowanceAmount || !allowanceStart || !selectedNestedSafeAddr || !allowanceHolder) {
+      addLog("Please fill in amount, start date, and select a holder.", "error");
       return;
     }
 
@@ -1189,7 +1190,8 @@ const App: React.FC = () => {
         startUnix,
         salt,
         refillSeconds,
-        finalName // Pass name for on-chain storage
+        finalName,
+        allowanceHolder as Address
       );
 
       const enableData = encodeFunctionData({
@@ -2221,6 +2223,25 @@ const App: React.FC = () => {
                       </div>
                     )}
 
+                    <div className="input-group">
+                      <label>Authorized Owner</label>
+                      <select
+                        value={allowanceHolder}
+                        onChange={(e) => setAllowanceHolder(e.target.value)}
+                        style={{
+                          width: '100%', background: 'var(--bg-dark)', border: '1px solid var(--border)',
+                          color: 'white', padding: '10px', borderRadius: '8px', fontFamily: 'JetBrains Mono'
+                        }}
+                      >
+                        <option value="">-- Select an Owner --</option>
+                        {nestedOwners.map(owner => (
+                          <option key={owner} value={owner}>
+                            {owner} {mySafes.find(s => s.address === owner) ? "(You)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     <button className="action-btn" onClick={handleCreateAllowance} disabled={loading || !isCurrentSafeOwner || !allowanceStart || !allowanceAmount || selectedToken === 'ETH'}>
                       Propose Budget
                     </button>
@@ -2275,7 +2296,7 @@ const App: React.FC = () => {
                     )}
                   </div>
 
-                  {/* NEW: On-Chain Audit Section */}
+                  {/* On-Chain Audit Section */}
                   <hr style={{ margin: '2rem 0', borderColor: 'var(--border)' }} />
                   <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span>On-Chain Audit</span>
@@ -2306,30 +2327,33 @@ const App: React.FC = () => {
                         opacity: !z.isActive ? 0.6 : 1
                       }}>
                         <div style={{ flex: 1 }}>
+                          {/* 1. Name and Badges */}
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{ fontWeight: 'bold' }}>{z.name}</span>
                             {!z.isActive && <span className="header-badge" style={{ background: '#52525b' }}>ARCHIVED</span>}
                             {z.isActive && !z.isControllable && <span className="header-badge" style={{ background: '#f59e0b', color: 'black' }}>READ ONLY</span>}
                           </div>
 
+                          {/* 2. Spent Amount */}
                           <div style={{ fontSize: '0.85rem', marginTop: '4px' }}>
                             <span style={{ color: 'var(--text-secondary)' }}>Spent:</span> {z.formattedSpent} / {z.formattedLimit} USDC
                           </div>
 
+                          {/* 3. Holder Info */}
+                          <div style={{ fontSize: '0.85rem', marginTop: '4px' }}>
+                            <span style={{ color: 'var(--text-secondary)' }}>Holder:</span> {z.holder.slice(0, 6)}...{z.holder.slice(-4)}
+                          </div>
+
+                          {/* 4. Config ID */}
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px', fontFamily: 'monospace' }}>
                             ConfigID: {z.configId.slice(0, 10)}...
                           </div>
                         </div>
 
-                        {/* ACTION BUTTONS FOR AUDIT */}
+                        {/* Right side buttons */}
                         <div style={{ display: 'flex', gap: '8px' }}>
                           {z.isActive && (
-                            <button
-                              className="icon-btn"
-                              title="Clean Up (Disable On-Chain)"
-                              onClick={() => handleCleanUpAllowance(z.configId, z.token)}
-                              disabled={loading || !isCurrentSafeOwner}
-                            >
+                            <button className="icon-btn" title="Clean Up (Disable On-Chain)" onClick={() => handleCleanUpAllowance(z.configId, z.token)} disabled={loading || !isCurrentSafeOwner}>
                               <Icons.Bug />
                             </button>
                           )}
