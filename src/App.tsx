@@ -30,7 +30,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { calculateConfigId, createAllowanceSessionStruct, createSessionStruct } from "./utils/smartSessions";
 import { getPermissionId, getSafe7579SessionAccount } from "./utils/safe7579";
 import { createPasskey, loadPasskeys, storePasskey } from "./utils/passkeys";
-import { executePasskeyTransaction, getSafeInfo } from "./utils/safePasskeyClient";
+import { executePasskeyTransaction, getSafeInfo, getSafe4337Pack } from "./utils/safePasskeyClient";
 import {
   ACTIVE_CHAIN,
   BUNDLER_URL,
@@ -187,7 +187,7 @@ const Icons = {
   Module: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>,
   Bug: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="4" ry="4" /><path d="M16 3v5" /><path d="M8 3v5" /><path d="M3 11h18" /></svg>,
   Key: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="7.5" cy="15.5" r="5.5" /><path d="m21 2-9.6 9.6" /><path d="m15.5 7.5 3 3L22 7l-3-3" /></svg>,
-  Settings: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
+  Settings: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
   LogOut: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
 };
 
@@ -1528,6 +1528,43 @@ const App: React.FC = () => {
                 message: { raw: hash }
               });
             };
+          } else if (loginMethod === 'passkey' && activePasskey) {
+             // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
+             // This triggers the browser WebAuthn prompt
+             signerCallback = async (hash: Hex) => {
+                addLog("Requesting Passkey signature...", "info");
+                const safe4337Pack = await getSafe4337Pack(activePasskey);
+                const sigResult = await safe4337Pack.protocolKit.signHash(hash);
+                const innerSigData = sigResult.data as Hex;
+
+                // 1. Get owner of the Passkey Safe to find the correct address for 'r'
+                // This assumes 1 owner which is the WebAuthn Signer contract/proxy
+                const safeOwners = await publicClient.readContract({
+                    address: currentAddr as Address,
+                    abi: SAFE_ABI,
+                    functionName: 'getOwners'
+                });
+
+                // Default to first owner if available, otherwise fallback to currentAddr (which likely won't work for ecrecover but works if owner is the safe itself in some configs)
+                // For Safe4337Pack, the owner is usually the WebAuthn Signer contract.
+                const ownerAddress = safeOwners[0] || currentAddr;
+
+                // 2. Wrap in Contract Signature (EIP-1271) format for OwnableValidator
+                // This allows the Nested Safe to call isValidSignature on the Passkey Safe
+                // r = Owner Address of the Passkey Safe (The WebAuthn Signer Contract)
+                // s = Offset to signature data (65 bytes: 32+32+1)
+                // v = 0 (Indicates Contract Signature)
+
+                const r = pad(ownerAddress as Hex, { size: 32 });
+                const s = pad(toHex(65), { size: 32 });
+                const v = "0x00";
+                const len = pad(toHex(size(innerSigData)), { size: 32 });
+
+                return encodePacked(
+                  ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
+                  [r, s, v, len, innerSigData]
+                );
+             };
           } else {
             throw new Error("Direct Passkey signing logic pending.");
           }
@@ -1549,28 +1586,26 @@ const App: React.FC = () => {
               // Use EIP-712 Signing for Parent Safe validity
               if (loginMethod === 'phantom' && walletClient) {
                 innerSigData = await walletClient.signTypedData({
-                  account: currentAddr as Address,
-                  domain: {
-                    chainId: ACTIVE_CHAIN.id,
-                    verifyingContract: requiredSigner as Address
-                  },
-                  types: {
-                    SafeMessage: [{ name: 'message', type: 'bytes' }]
-                  },
-                  primaryType: 'SafeMessage',
-                  message: { message: hash }
+                    account: currentAddr as Address,
+                    domain: {
+                        chainId: ACTIVE_CHAIN.id,
+                        verifyingContract: requiredSigner as Address
+                    },
+                    types: {
+                        SafeMessage: [{ name: 'message', type: 'bytes' }]
+                    },
+                    primaryType: 'SafeMessage',
+                    message: { message: hash }
                 });
+              } else if (loginMethod === 'passkey' && activePasskey) {
+                // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
+                // This triggers the browser WebAuthn prompt
+                addLog("Requesting Passkey signature...", "info");
+                const safe4337Pack = await getSafe4337Pack(activePasskey);
+                const sigResult = await safe4337Pack.protocolKit.signHash(hash);
+                innerSigData = sigResult.data as Hex;
               } else {
-                // Fallback for Passkeys or other methods
-                // (Assuming Passkey signer here works similarly to EOA if using protocolKit)
-                const provider = (window as any).ethereum || PUBLIC_RPC; // Simplification
-                const protocolKit = await Safe.init({
-                  provider,
-                  signer: currentAddr,
-                  safeAddress: requiredSigner
-                });
-                const sig = await protocolKit.signHash(hash);
-                innerSigData = sig.data as Hex;
+                 throw new Error("Unknown login method for signing.");
               }
 
               // 2. Wrap for OwnableValidator (Contract Signature Format)
