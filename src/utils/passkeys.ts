@@ -18,6 +18,11 @@ export async function createPasskey(): Promise<PasskeyArgType> {
       },
       timeout: 60_000,
       attestation: 'none',
+      authenticatorSelection: {
+        userVerification: 'required',
+        residentKey: 'required',
+        requireResidentKey: true
+      }
     },
   })) as PublicKeyCredential | null;
 

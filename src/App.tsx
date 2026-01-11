@@ -1615,11 +1615,14 @@ const App: React.FC = () => {
                 });
               } else if (loginMethod === 'passkey' && activePasskey) {
                 // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
-                // This triggers the browser WebAuthn prompt
                 addLog("Requesting Passkey signature...", "info");
                 const safe4337Pack = await getSafe4337Pack(activePasskey);
 
-                // Passkey Mode: Must sign the EIP-712 hash intended for the Remote Parent Safe
+                // 1. Get the WebAuthn Signer Address (Owner of the Parent Safe)
+                const owners = await safe4337Pack.protocolKit.getOwners();
+                const webAuthnSignerAddress = owners[0] as Address;
+
+                // 2. Calculate the EIP-712 hash for the Parent Safe
                 const safeMessageHash = hashTypedData({
                   domain: {
                     chainId: ACTIVE_CHAIN.id,
@@ -1632,27 +1635,33 @@ const App: React.FC = () => {
                   message: { message: hash }
                 });
 
+                // 3. Sign hash to get RAW WebAuthn data
                 const sigResult = await safe4337Pack.protocolKit.signHash(safeMessageHash);
+                const rawWebAuthnSig = sigResult.data as Hex;
 
-                // The Safe SDK `signHash` returns a fully formatted Safe signature for the WebAuthn signer.
-                // It already includes: [r=Owner][s=Offset][v=0][len][WebAuthnData]
-                // So we use it directly.
-                innerSigData = sigResult.data as Hex;
+                // 4. Wrap into Safe Contract Signature Format (v=0)
+                // [r=Owner] [s=Offset] [v=0] [len] [data]
+                const r_auth = pad(webAuthnSignerAddress, { size: 32 });
+                const s_auth = pad(toHex(65), { size: 32 }); // Offset to dynamic data (32+32+1)
+                const v_auth = "0x00";
+                const len_auth = pad(toHex(size(rawWebAuthnSig)), { size: 32 });
+
+                innerSigData = encodePacked(
+                  ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
+                  [r_auth, s_auth, v_auth, len_auth, rawWebAuthnSig]
+                );
 
               } else {
                 throw new Error("Unknown login method for signing.");
               }
 
-              // 2. Wrap for OwnableValidator (Contract Signature Format)
-              // r = Contract Address (Parent Safe)
-              // s = Offset to signature data (65 bytes: 32+32+1)
-              // v = 0 (Indicates Contract Signature)
+              // 5. Wrap for Nested Safe's OwnableValidator (Contract Signature Format)
+              // [r=ParentSafe] [s=Offset] [v=0] [len] [innerSigData]
 
               const r = pad(requiredSigner as Hex, { size: 32 });
               const s = pad(toHex(65), { size: 32 });
-              const v = "0x00"; // FIX: Added 0x prefix
+              const v = "0x00";
 
-              // Encode the inner signature length and data
               const len = pad(toHex(size(innerSigData)), { size: 32 });
 
               const wrappedSignature = encodePacked(
