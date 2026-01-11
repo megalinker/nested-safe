@@ -137,7 +137,7 @@ const ENABLE_SESSIONS_ABI = parseAbi([
 // --- PERIODIC POLICY V3 ABI ---
 const PERIODIC_POLICY_ABI = parseAbi([
   "struct TokenPolicyData { address holder; uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isDeleted; }",
-  "struct AllowanceInfo { bytes32 configId; address token; address holder; uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isActive; }",
+  "struct AllowanceInfo { bytes32 configId; address token; address holder; uint256 limit; uint256 refillInterval; uint256 amountSpent; uint48 lastRefill; string name; bool isActive; bytes32 linkedParent; }",
   "function getAllowances(address account) external view returns (AllowanceInfo[] memory)",
   "function revokeAllowance(bytes32 configId, address token) external",
   "function getAllowance(address account, bytes32 configId, address token) external view returns (TokenPolicyData memory)"
@@ -1166,8 +1166,8 @@ const App: React.FC = () => {
       }
 
       // --- 2. PREPARE SESSION ---
-      const pk = generatePrivateKey();
-      const sessionOwner = privateKeyToAccount(pk);
+      const sessionOwnerAddress = allowanceHolder as Address;
+
       const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
       const startUnix = Math.floor(new Date(allowanceStart).getTime() / 1000);
 
@@ -1184,14 +1184,15 @@ const App: React.FC = () => {
       const finalName = allowanceName || "Untitled Budget";
 
       const session = createAllowanceSessionStruct(
-        sessionOwner.address,
+        sessionOwnerAddress,
         tokenAddr,
         amountRaw,
         startUnix,
         salt,
         refillSeconds,
         finalName,
-        allowanceHolder as Address
+        allowanceHolder as Address,
+        pad("0x0", { size: 32 })
       );
 
       const enableData = encodeFunctionData({
@@ -1225,7 +1226,7 @@ const App: React.FC = () => {
       const newAllowance = {
         permissionId,
         configId,
-        privateKey: pk,
+        signerAddress: allowanceHolder,
         name: finalName,
         amount: allowanceAmount,
         token: selectedToken,
@@ -1250,15 +1251,98 @@ const App: React.FC = () => {
     }
   };
 
-  const handleCheckSpecific = async (allowance: any) => {
-    if (!allowance.configId) {
-      alert("This allowance is from an older version (no Config ID stored). Use the 'Sync from Chain' button below.");
+  const handleCreateLinkedSchedule = async (parentAllowance: any) => {
+    if (!parentAllowance.configId) {
+      alert("Error: No Config ID found on parent allowance.");
       return;
     }
 
+    setLoading(true);
     try {
-      addLog(`Fetching live status for ${allowance.name}...`, "info");
+      // 1. Setup the Ephemeral Key
+      const ephemeralKey = generatePrivateKey();
+      const ephemeralAccount = privateKeyToAccount(ephemeralKey);
+      const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
+
+      // 2. Schedule for 1 hour from now (Simulated)
+      const startUnix = Math.floor(Date.now() / 1000); // Executable immediately for this test
+
+      // 3. Create Session with POINTER
+      // We pass the parent's configId as the last argument
+      const session = createAllowanceSessionStruct(
+        ephemeralAccount.address, // The Ephemeral Key is the signer
+        USDC_ADDRESS as Address,
+        parseUnits("10", 6), // Spending 10 USDC
+        startUnix,
+        salt,
+        3600, // Interval doesn't really matter for a one-time schedule
+        "Scheduled Payment",
+        parentAllowance.holder, // Keep the same holder for record keeping
+        parentAllowance.configId // <--- THE MAGIC POINTER
+      );
+
+      // 4. Enable this session on-chain
+      // Note: In a real app, the User would sign this userOp. 
+      // Here, we assume the connected wallet is authorizing this schedule.
+      const enableData = encodeFunctionData({
+        abi: ENABLE_SESSIONS_ABI,
+        functionName: "enableSessions",
+        args: [[session]]
+      });
+
+      await proposeTransaction(
+        SMART_SESSIONS_VALIDATOR_ADDRESS,
+        0n,
+        enableData,
+        `Schedule 10 USDC (Linked to ${parentAllowance.name})`
+      );
+
+      // 5. Save to local storage so we can execute it
+      const scheduleData = {
+        privateKey: ephemeralKey, // We store the ephemeral private key
+        session,
+        token: 'USDC',
+        permissionId: getPermissionId(session),
+        amount: "10"
+      };
+
+      // We'll just hijack the 'activeSession' state to let you execute it immediately for the test
+      setSignerMode('session');
+      setActiveSession(scheduleData); // Load it into the "Transfer" tab context
+      setActiveTab('transfer');
+
+      addLog("Linked Schedule Created! Go to Transfer tab to execute.", "success");
+
+    } catch (e: any) {
+      addLog(e.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCheckSpecific = async (allowance: any) => {
+    try {
+      addLog(`🔍 Debugging Allowance: ${allowance.name}...`, "info");
       const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
+
+      const recalculatedConfigId = calculateConfigId(
+        selectedNestedSafeAddr as Address,
+        allowance.permissionId,
+        USDC_ADDRESS as Address
+      );
+
+      // FIX: console.log directly instead of the helper wrapper for complex objects
+      console.log("DEBUG-CONFIG", {
+        storedConfigId: allowance.configId,
+        recalculated: recalculatedConfigId,
+        permissionId: allowance.permissionId,
+        account: selectedNestedSafeAddr,
+        token: USDC_ADDRESS
+      });
+
+      if (recalculatedConfigId !== allowance.configId) {
+        addLog("⚠️ Config ID Mismatch! The app may have stored an invalid ID.", "error");
+      }
 
       const data = await publicClient.readContract({
         address: PERIODIC_ERC20_POLICY as Address,
@@ -1266,14 +1350,28 @@ const App: React.FC = () => {
         functionName: "getAllowance",
         args: [
           selectedNestedSafeAddr as Address,
-          allowance.configId as Hex,
-          USDC_ADDRESS as Address // Assuming USDC for allowances
+          recalculatedConfigId,
+          USDC_ADDRESS as Address
         ]
       });
 
-      consoleLog("ALLOWANCE DATA", allowance.name, data);
-      addLog(`Status: ${data.isDeleted ? 'Inactive ❌' : 'Active ✅'} | Spent: ${formatUnits(data.amountSpent, 6)}`, "success");
+      // FIX: console.log directly
+      console.log("DEBUG-ONCHAIN", data);
+
+      if (data.limit === 0n && !data.isDeleted) {
+        addLog("❌ Policy returned Empty Data (Limit 0). The Config ID might be wrong, or initialization failed.", "error");
+      } else {
+        const holderText = data.holder === "0x0000000000000000000000000000000000000000" ? "None" : `${data.holder.slice(0, 6)}...`;
+        addLog(`✅ Data Found! Limit: ${formatUnits(data.limit, 6)} | Spent: ${formatUnits(data.amountSpent, 6)} | Holder: ${holderText}`, "success");
+
+        const now = Math.floor(Date.now() / 1000);
+        const elapsed = now - Number(data.lastRefill);
+        const interval = Number(data.refillInterval);
+        addLog(`⏱ Time Status: Last Refill ${new Date(Number(data.lastRefill) * 1000).toLocaleTimeString()} | Interval: ${interval}s | Elapsed: ${elapsed}s`, "info");
+      }
+
     } catch (e: any) {
+      console.error(e);
       addLog(`Fetch failed: ${e.message}`, "error");
     }
   };
@@ -1404,17 +1502,94 @@ const App: React.FC = () => {
     setLoading(true);
 
     try {
-      const { privateKey, session, token, permissionId } = activeSession;
-      const sessionOwner = privateKeyToAccount(privateKey);
+      const { privateKey, session, token, signerAddress, holder } = activeSession;
+      const requiredSigner = (signerAddress || holder) as string;
 
       const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
+
+      let signerCallback;
+
+      if (privateKey) {
+        // --- CASE A: AUTOMATED / SCHEDULED (Ephemeral Key) ---
+        const localAccount = privateKeyToAccount(privateKey);
+        signerCallback = async (hash: Hex) => localAccount.sign({ hash });
+      } else {
+        // --- CASE B: USER-BOUND (Interactive) ---
+        const currentAddr = loginMethod === 'phantom' ? walletClient?.account?.address : eoaAddress;
+        if (!currentAddr) throw new Error("No wallet connected");
+
+        // 1. IS HOLDER == CONNECTED WALLET? (Direct EOA)
+        if (currentAddr.toLowerCase() === requiredSigner.toLowerCase()) {
+          if (loginMethod === 'phantom' && walletClient) {
+            signerCallback = async (hash: Hex) => {
+              addLog("Requesting signature from wallet...", "info");
+              return await walletClient.signMessage({
+                account: currentAddr as Address,
+                message: { raw: hash }
+              });
+            };
+          } else {
+            throw new Error("Direct Passkey signing logic pending.");
+          }
+        }
+        // 2. IS HOLDER == A PARENT SAFE? (Smart Contract Signer)
+        else {
+          const parentSafe = mySafes.find(s => s.address.toLowerCase() === requiredSigner.toLowerCase());
+
+          if (parentSafe) {
+            const code = await publicClient.getBytecode({ address: requiredSigner as Address });
+            if (!code || code === '0x') {
+              throw new Error(`Parent Safe (${parentSafe.name}) is NOT deployed on-chain yet. Please switch to it and send a transaction first.`);
+            }
+
+            signerCallback = async (hash: Hex) => {
+              addLog(`Requesting signature on behalf of Safe ${parentSafe.name}...`, "info");
+              const provider = (window as any).phantom?.ethereum || (window as any).ethereum;
+
+              // 1. Generate EIP-712 Signature from Parent Safe Owner
+              const protocolKit = await Safe.init({
+                provider,
+                signer: currentAddr,
+                safeAddress: requiredSigner
+              });
+
+              const innerSig = await protocolKit.signHash(hash);
+              const innerSigData = innerSig.data as Hex;
+
+              // 2. Wrap for OwnableValidator (Contract Signature Format)
+              // r = Contract Address (Parent Safe)
+              // s = Offset to signature data (65 bytes: 32+32+1)
+              // v = 0 (Indicates Contract Signature)
+
+              const r = pad(requiredSigner as Hex, { size: 32 });
+              const s = pad(toHex(65), { size: 32 });
+              const v = "0x00"; // FIX: Added 0x prefix
+
+              // Encode the inner signature length and data
+              const len = pad(toHex(size(innerSigData)), { size: 32 });
+
+              const wrappedSignature = encodePacked(
+                ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
+                [r, s, v, len, innerSigData]
+              );
+
+              return wrappedSignature;
+            };
+
+          } else {
+            throw new Error(`Wrong Wallet! Connected: ${currentAddr.slice(0, 6)}... | Required: ${requiredSigner.slice(0, 6)}...`);
+          }
+        }
+      }
+
+      // --- CLIENT SETUP & EXECUTION ---
       const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
 
       const safeAccount = await getSafe7579SessionAccount(
         publicClient,
         selectedNestedSafeAddr as Hex,
         session,
-        async (hash) => (sessionOwner as any).sign({ hash })
+        signerCallback
       );
 
       const smartClient = createSmartAccountClient({
@@ -1430,41 +1605,23 @@ const App: React.FC = () => {
         tx = {
           to: USDC_ADDRESS as Address,
           value: 0n,
-          data: encodeFunctionData({
-            abi: ERC20_ABI,
-            functionName: "transfer",
-            args: [recipient as Address, parseUnits(sendAmount, 6)]
-          })
+          data: encodeFunctionData({ abi: ERC20_ABI, functionName: "transfer", args: [recipient as Address, parseUnits(sendAmount, 6)] })
         };
       } else {
         tx = { to: recipient as Address, value: parseEther(sendAmount), data: "0x" as Hex };
       }
 
       addLog(`Spending ${sendAmount} ${token} via Session Key...`, "info");
-      const hash = await smartClient.sendTransaction(tx);
-      addLog(`Success! UserOp Hash: ${hash}`, "success");
+      const userOpHash = await smartClient.sendTransaction(tx);
+      addLog(`Success! UserOp Hash: ${userOpHash}`, "success");
 
       setSignerMode('main');
       setActiveSession(null);
-
-      // Update local usage if not recurring (though this demo focuses on recurring)
-      const updatedAllowances = myAllowances.map(al => {
-        if (al.permissionId === permissionId && al.type !== 'recurring') {
-          const currentUsage = parseInt(al.usage || "1");
-          return { ...al, usage: (currentUsage - 1).toString() };
-        }
-        return al;
-      }).filter(al => al.type === 'recurring' || parseInt(al.usage) > 0);
-
-      setMyAllowances(updatedAllowances);
-      localStorage.setItem("my_allowances", JSON.stringify(updatedAllowances));
-
       setTimeout(() => fetchData(selectedNestedSafeAddr), 4000);
 
     } catch (e: any) {
       console.error(e);
-      const niceMessage = formatError(e);
-      addLog(niceMessage, "error");
+      addLog(formatError(e), "error");
     } finally {
       setLoading(false);
     }
@@ -2268,6 +2425,14 @@ const App: React.FC = () => {
                           </div>
 
                           <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              className="action-btn secondary small"
+                              style={{ borderColor: '#a855f7', color: '#a855f7', border: '1px solid', background: 'rgba(168, 85, 247, 0.1)' }}
+                              onClick={() => handleCreateLinkedSchedule(al)}
+                              title="Create a one-off scheduled payment linked to this budget"
+                            >
+                              <Icons.Plus /> Link Schedule
+                            </button>
                             <button
                               className="action-btn secondary small"
                               onClick={() => {

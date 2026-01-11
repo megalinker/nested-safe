@@ -19,17 +19,17 @@ const PIMLICO_NETWORK_SLUG = NETWORK === 'mainnet' ? 'base' : 'base-sepolia';
 export const BUNDLER_URL = `https://api.pimlico.io/v1/${PIMLICO_NETWORK_SLUG}/rpc?apikey=${PIMLICO_API_KEY}`;
 export const PAYMASTER_URL = `https://api.pimlico.io/v2/${PIMLICO_NETWORK_SLUG}/rpc?apikey=${PIMLICO_API_KEY}`;
 
-// 4. Contract Addresses (Differs by Network)
+// 4. Contract Addresses
 
 // USDC Address
 export const USDC_ADDRESS = NETWORK === 'mainnet'
-  ? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" // Base Mainnet USDC
-  : "0x036CbD53842c5426634e7929541eC2318f3dCF7e"; // Base Sepolia USDC
+  ? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+  : "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
-// Periodic Policy (V4 Addresses)
+// Periodic Policy (V5 - Pointer Support)
 export const PERIODIC_ERC20_POLICY = NETWORK === 'mainnet'
-  ? "0x88aC76F8B6A70743d119959e22Aad69Ed2cF1cd1" // New Mainnet Address
-  : "0x05c50298262aF04c20a6Be8E67fbfd15FFFB0bBd"; // New Testnet Address
+  ? "0x5385bEc5ee3B6dE5028777A82016E0019AcB6399" // New Mainnet
+  : "0xEA4EE1eD11D73Bfd9E1E5e12EA2c762F76Cad084"; // New Testnet
 
 // Constants common to both (Safe/Rhinestone Singletons)
 export const SAFE_7579_ADAPTER_ADDRESS = "0x7579f2AD53b01c3D8779Fe17928e0D48885B0003";

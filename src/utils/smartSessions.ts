@@ -2,6 +2,7 @@ import {
     encodeAbiParameters,
     keccak256,
     encodePacked,
+    pad,
     type Hex,
     type Address,
 } from "viem";
@@ -85,10 +86,11 @@ export const createAllowanceSessionStruct = (
     salt: Hex,
     refillInterval: number,
     allowanceName: string,
-    allowanceHolder: Address
+    allowanceHolder: Address,
+    parentConfigId?: Hex
 ) => {
     if (tokenAddress === "0x0000000000000000000000000000000000000000") {
-        throw new Error("Recurring Allowances currently only support ERC20 tokens (USDC).");
+        throw new Error("Recurring Allowances currently only support ERC20 tokens (USDC), not Native ETH.");
     }
 
     if (refillInterval <= 0) {
@@ -96,6 +98,9 @@ export const createAllowanceSessionStruct = (
     }
 
     const policies = [];
+
+    // Use passed parentID or default to 0x0 (Standard Allowance)
+    const pId = parentConfigId || pad("0x0", { size: 32 });
 
     policies.push({
         policy: PERIODIC_ERC20_POLICY as Address,
@@ -105,14 +110,16 @@ export const createAllowanceSessionStruct = (
                 { type: 'uint256[]' }, // limits
                 { type: 'uint256[]' }, // intervals
                 { type: 'address[]' }, // holders
-                { type: 'string[]' }   // names
+                { type: 'string[]' },  // names
+                { type: 'bytes32' }    // parentConfigId (Pointer)
             ],
             [
                 [tokenAddress],
                 [amount],
                 [BigInt(refillInterval)],
                 [allowanceHolder],
-                [allowanceName]
+                [allowanceName],
+                pId
             ]
         )
     });
