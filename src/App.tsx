@@ -1529,50 +1529,58 @@ const App: React.FC = () => {
               });
             };
           } else if (loginMethod === 'passkey' && activePasskey) {
-             // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
-             // This triggers the browser WebAuthn prompt
-             signerCallback = async (hash: Hex) => {
-                addLog("Requesting Passkey signature...", "info");
-                const safe4337Pack = await getSafe4337Pack(activePasskey);
+            // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
+            signerCallback = async (hash: Hex) => {
+              addLog("Requesting Passkey signature...", "info");
+              const safe4337Pack = await getSafe4337Pack(activePasskey);
 
-                // 1. The Parent Safe (Layer 2) will verify the signature against the EIP-712 hash 
-                // of the "SafeMessage" containing the UserOpHash.
-                // We must calculate this hash locally so the Passkey signs the correct challenge.
-                const safeMessageHash = hashTypedData({
-                    domain: {
-                        chainId: ACTIVE_CHAIN.id,
-                        verifyingContract: currentAddr as Address // Parent Safe Address
-                    },
-                    types: {
-                        SafeMessage: [{ name: 'message', type: 'bytes' }]
-                    },
-                    primaryType: 'SafeMessage',
-                    message: { message: hash }
-                });
+              // 1. Calculate the hash that the Parent Safe (Layer 2) expects.
+              // This is an EIP-712 'SafeMessage' hash for the Parent Safe's address.
+              const safeMessageHash = hashTypedData({
+                domain: {
+                  chainId: ACTIVE_CHAIN.id,
+                  verifyingContract: currentAddr as Address // Parent Safe Address
+                },
+                types: {
+                  SafeMessage: [{ name: 'message', type: 'bytes' }]
+                },
+                primaryType: 'SafeMessage',
+                message: { message: hash }
+              });
 
-                // 2. Sign this hash using the Passkey. 
-                // The SDK returns a formatted Safe signature (r=Owner, s=Offset, v=0 + Data).
-                // This signature is valid for the Parent Safe.
-                const sigResult = await safe4337Pack.protocolKit.signHash(safeMessageHash);
-                const innerSigData = sigResult.data as Hex;
+              // 2. Sign this hash using the Passkey. 
+              // This returns the RAW WebAuthn signature data.
+              const sigResult = await safe4337Pack.protocolKit.signHash(safeMessageHash);
+              const rawWebAuthnSig = sigResult.data as Hex;
 
-                // 3. Wrap this signature for the Nested Safe (Layer 3).
-                // We tell the Nested Safe's validator to call isValidSignature on the Parent Safe.
-                // r = Parent Safe Address
-                // s = Offset
-                // v = 0
-                
-                const r = pad(currentAddr as Hex, { size: 32 }); 
-                const s = pad(toHex(65), { size: 32 });
-                const v = "0x00"; 
-                
-                const len = pad(toHex(size(innerSigData)), { size: 32 });
+              // 3. Format this for the Parent Safe (Safe Contract Signature Format).
+              // The Parent Safe owner is the WebAuthn Signer Contract.
+              const owners = await safe4337Pack.protocolKit.getOwners();
+              const webAuthnSignerAddress = owners[0] as Address;
 
-                return encodePacked(
-                  ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
-                  [r, s, v, len, innerSigData]
-                );
-             };
+              const r_auth = pad(webAuthnSignerAddress, { size: 32 }); // r = Owner Address
+              const s_auth = pad(toHex(65), { size: 32 });             // s = Offset to data (32+32+1)
+              const v_auth = "0x00";                                   // v = 0 (Contract Signature)
+              const len_auth = pad(toHex(size(rawWebAuthnSig)), { size: 32 });
+
+              const innerSigData = encodePacked(
+                ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
+                [r_auth, s_auth, v_auth, len_auth, rawWebAuthnSig]
+              );
+
+              // 4. Wrap THIS signature for the Nested Safe (Layer 3).
+              // We tell the Nested Safe's validator to call isValidSignature on the Parent Safe.
+              const r = pad(currentAddr as Hex, { size: 32 }); // r = Parent Safe Address
+              const s = pad(toHex(65), { size: 32 });
+              const v = "0x00";                                // v = 0 (Contract Signature)
+
+              const len = pad(toHex(size(innerSigData)), { size: 32 });
+
+              return encodePacked(
+                ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
+                [r, s, v, len, innerSigData]
+              );
+            };
           } else {
             throw new Error("Direct Passkey signing logic pending.");
           }
@@ -1594,40 +1602,45 @@ const App: React.FC = () => {
               // Use EIP-712 Signing for Parent Safe validity
               if (loginMethod === 'phantom' && walletClient) {
                 innerSigData = await walletClient.signTypedData({
-                    account: currentAddr as Address,
-                    domain: {
-                        chainId: ACTIVE_CHAIN.id,
-                        verifyingContract: requiredSigner as Address
-                    },
-                    types: {
-                        SafeMessage: [{ name: 'message', type: 'bytes' }]
-                    },
-                    primaryType: 'SafeMessage',
-                    message: { message: hash }
+                  account: currentAddr as Address,
+                  domain: {
+                    chainId: ACTIVE_CHAIN.id,
+                    verifyingContract: requiredSigner as Address
+                  },
+                  types: {
+                    SafeMessage: [{ name: 'message', type: 'bytes' }]
+                  },
+                  primaryType: 'SafeMessage',
+                  message: { message: hash }
                 });
               } else if (loginMethod === 'passkey' && activePasskey) {
                 // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
                 // This triggers the browser WebAuthn prompt
                 addLog("Requesting Passkey signature...", "info");
                 const safe4337Pack = await getSafe4337Pack(activePasskey);
-                
+
                 // Passkey Mode: Must sign the EIP-712 hash intended for the Remote Parent Safe
                 const safeMessageHash = hashTypedData({
-                    domain: {
-                        chainId: ACTIVE_CHAIN.id,
-                        verifyingContract: requiredSigner as Address // The Remote Parent Safe
-                    },
-                    types: {
-                        SafeMessage: [{ name: 'message', type: 'bytes' }]
-                    },
-                    primaryType: 'SafeMessage',
-                    message: { message: hash }
+                  domain: {
+                    chainId: ACTIVE_CHAIN.id,
+                    verifyingContract: requiredSigner as Address // The Remote Parent Safe
+                  },
+                  types: {
+                    SafeMessage: [{ name: 'message', type: 'bytes' }]
+                  },
+                  primaryType: 'SafeMessage',
+                  message: { message: hash }
                 });
 
                 const sigResult = await safe4337Pack.protocolKit.signHash(safeMessageHash);
+
+                // The Safe SDK `signHash` returns a fully formatted Safe signature for the WebAuthn signer.
+                // It already includes: [r=Owner][s=Offset][v=0][len][WebAuthnData]
+                // So we use it directly.
                 innerSigData = sigResult.data as Hex;
+
               } else {
-                 throw new Error("Unknown login method for signing.");
+                throw new Error("Unknown login method for signing.");
               }
 
               // 2. Wrap for OwnableValidator (Contract Signature Format)
