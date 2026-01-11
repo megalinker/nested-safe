@@ -1529,42 +1529,32 @@ const App: React.FC = () => {
               });
             };
           } else if (loginMethod === 'passkey' && activePasskey) {
-             // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
-             // This triggers the browser WebAuthn prompt
-             signerCallback = async (hash: Hex) => {
-                addLog("Requesting Passkey signature...", "info");
-                const safe4337Pack = await getSafe4337Pack(activePasskey);
-                const sigResult = await safe4337Pack.protocolKit.signHash(hash);
-                const innerSigData = sigResult.data as Hex;
+            // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
+            // This triggers the browser WebAuthn prompt
+            signerCallback = async (hash: Hex) => {
+              addLog("Requesting Passkey signature...", "info");
+              const safe4337Pack = await getSafe4337Pack(activePasskey);
 
-                // 1. Get owner of the Passkey Safe to find the correct address for 'r'
-                // This assumes 1 owner which is the WebAuthn Signer contract/proxy
-                const safeOwners = await publicClient.readContract({
-                    address: currentAddr as Address,
-                    abi: SAFE_ABI,
-                    functionName: 'getOwners'
-                });
+              // This returns a signature valid for the Passkey Safe (0xfcb2...)
+              // It usually looks like: [DynamicPart] + [00 (r) + 41 (s) + 00 (v)] + [Data]
+              const sigResult = await safe4337Pack.protocolKit.signHash(hash);
+              const innerSigData = sigResult.data as Hex;
 
-                // Default to first owner if available, otherwise fallback to currentAddr (which likely won't work for ecrecover but works if owner is the safe itself in some configs)
-                // For Safe4337Pack, the owner is usually the WebAuthn Signer contract.
-                const ownerAddress = safeOwners[0] || currentAddr;
+              // --- FIX STARTS HERE ---
+              // We must tell the OwnableValidator to call isValidSignature on the Safe (currentAddr),
+              // NOT the underlying WebAuthn Signer contract.
 
-                // 2. Wrap in Contract Signature (EIP-1271) format for OwnableValidator
-                // This allows the Nested Safe to call isValidSignature on the Passkey Safe
-                // r = Owner Address of the Passkey Safe (The WebAuthn Signer Contract)
-                // s = Offset to signature data (65 bytes: 32+32+1)
-                // v = 0 (Indicates Contract Signature)
+              const r = pad(currentAddr as Hex, { size: 32 }); // r = The Safe Address
+              const s = pad(toHex(65), { size: 32 });          // s = Offset to signature data
+              const v = "0x00";                                // v = 0 (Contract Signature)
 
-                const r = pad(ownerAddress as Hex, { size: 32 });
-                const s = pad(toHex(65), { size: 32 });
-                const v = "0x00";
-                const len = pad(toHex(size(innerSigData)), { size: 32 });
+              const len = pad(toHex(size(innerSigData)), { size: 32 });
 
-                return encodePacked(
-                  ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
-                  [r, s, v, len, innerSigData]
-                );
-             };
+              return encodePacked(
+                ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
+                [r, s, v, len, innerSigData]
+              );
+            };
           } else {
             throw new Error("Direct Passkey signing logic pending.");
           }
@@ -1586,36 +1576,41 @@ const App: React.FC = () => {
               // Use EIP-712 Signing for Parent Safe validity
               if (loginMethod === 'phantom' && walletClient) {
                 innerSigData = await walletClient.signTypedData({
-                    account: currentAddr as Address,
-                    domain: {
-                        chainId: ACTIVE_CHAIN.id,
-                        verifyingContract: requiredSigner as Address
-                    },
-                    types: {
-                        SafeMessage: [{ name: 'message', type: 'bytes' }]
-                    },
-                    primaryType: 'SafeMessage',
-                    message: { message: hash }
+                  account: currentAddr as Address,
+                  domain: {
+                    chainId: ACTIVE_CHAIN.id,
+                    verifyingContract: requiredSigner as Address
+                  },
+                  types: {
+                    SafeMessage: [{ name: 'message', type: 'bytes' }]
+                  },
+                  primaryType: 'SafeMessage',
+                  message: { message: hash }
                 });
               } else if (loginMethod === 'passkey' && activePasskey) {
-                // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
-                // This triggers the browser WebAuthn prompt
                 addLog("Requesting Passkey signature...", "info");
                 const safe4337Pack = await getSafe4337Pack(activePasskey);
                 const sigResult = await safe4337Pack.protocolKit.signHash(hash);
                 innerSigData = sigResult.data as Hex;
+
+                const r = pad(currentAddr as Hex, { size: 32 }); // r = The Safe Address
+                const s = pad(toHex(65), { size: 32 });          // s = Offset to signature data
+                const v = "0x00";                                // v = 0 (Contract Signature)
+
+                const len = pad(toHex(size(innerSigData)), { size: 32 });
+
+                return encodePacked(
+                  ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
+                  [r, s, v, len, innerSigData]
+                );
               } else {
-                 throw new Error("Unknown login method for signing.");
+                throw new Error("Unknown login method for signing.");
               }
 
               // 2. Wrap for OwnableValidator (Contract Signature Format)
-              // r = Contract Address (Parent Safe)
-              // s = Offset to signature data (65 bytes: 32+32+1)
-              // v = 0 (Indicates Contract Signature)
-
               const r = pad(requiredSigner as Hex, { size: 32 });
               const s = pad(toHex(65), { size: 32 });
-              const v = "0x00"; // FIX: Added 0x prefix
+              const v = "0x00";
 
               // Encode the inner signature length and data
               const len = pad(toHex(size(innerSigData)), { size: 32 });
