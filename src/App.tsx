@@ -1544,17 +1544,34 @@ const App: React.FC = () => {
 
             signerCallback = async (hash: Hex) => {
               addLog(`Requesting signature on behalf of Safe ${parentSafe.name}...`, "info");
-              const provider = (window as any).phantom?.ethereum || (window as any).ethereum;
+              let innerSigData: Hex;
 
-              // 1. Generate EIP-712 Signature from Parent Safe Owner
-              const protocolKit = await Safe.init({
-                provider,
-                signer: currentAddr,
-                safeAddress: requiredSigner
-              });
-
-              const innerSig = await protocolKit.signHash(hash);
-              const innerSigData = innerSig.data as Hex;
+              // Use EIP-712 Signing for Parent Safe validity
+              if (loginMethod === 'phantom' && walletClient) {
+                innerSigData = await walletClient.signTypedData({
+                  account: currentAddr as Address,
+                  domain: {
+                    chainId: ACTIVE_CHAIN.id,
+                    verifyingContract: requiredSigner as Address
+                  },
+                  types: {
+                    SafeMessage: [{ name: 'message', type: 'bytes' }]
+                  },
+                  primaryType: 'SafeMessage',
+                  message: { message: hash }
+                });
+              } else {
+                // Fallback for Passkeys or other methods
+                // (Assuming Passkey signer here works similarly to EOA if using protocolKit)
+                const provider = (window as any).ethereum || PUBLIC_RPC; // Simplification
+                const protocolKit = await Safe.init({
+                  provider,
+                  signer: currentAddr,
+                  safeAddress: requiredSigner
+                });
+                const sig = await protocolKit.signHash(hash);
+                innerSigData = sig.data as Hex;
+              }
 
               // 2. Wrap for OwnableValidator (Contract Signature Format)
               // r = Contract Address (Parent Safe)
