@@ -16,8 +16,7 @@ import {
   toHex,
   hashTypedData,
   encodePacked,
-  size,
-  hashMessage
+  size
 } from "viem";
 import { entryPoint07Address } from "viem/account-abstraction";
 import { createSmartAccountClient } from "permissionless";
@@ -1541,9 +1540,7 @@ const App: React.FC = () => {
               consoleLog("SIGNER", "WebAuthn Shared Signer Address", webAuthnSignerAddress);
 
               // 2. Calculate the EIP-712 SafeMessage hash for the Parent Safe
-              // The Nested Safe Validator will ask the Parent Safe to validate 'hash' (UserOpHash).
-              // The Parent Safe will convert 'hash' to a SafeMessage hash and check the signer.
-              // Therefore, we must sign the SafeMessage hash.
+              // The Parent Safe (currentAddr) is the one validating the signature.
               const safeMessageHash = hashTypedData({
                 domain: {
                   chainId: ACTIVE_CHAIN.id,
@@ -1553,7 +1550,7 @@ const App: React.FC = () => {
                   SafeMessage: [{ name: 'message', type: 'bytes' }]
                 },
                 primaryType: 'SafeMessage',
-                message: { message: hash } // RAW UserOpHash (No EthSign wrapping)
+                message: { message: hash } // Raw UserOpHash
               });
 
               consoleLog("SIGNER", "Direct SafeMessage Hash (Challenge)", safeMessageHash);
@@ -1574,6 +1571,8 @@ const App: React.FC = () => {
                 ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
                 [r_auth, s_auth, v_auth, len_auth, rawWebAuthnSig]
               );
+
+              consoleLog("SIGNER", "Inner Signature (Parent Safe)", innerSigData);
 
               // 5. Wrap THIS signature for the Nested Safe (Layer 3).
               // [r=ParentSafe] [s=Offset] [v=0] [len] [innerSigData]
