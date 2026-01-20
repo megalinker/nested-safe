@@ -15,6 +15,7 @@ import Safe, { type PasskeyArgType } from "@safe-global/protocol-kit";
 import { Icons } from "./components/shared/Icons";
 import { SafeListItem } from "./components/shared/SafeListItem";
 import { TerminalDrawer } from "./components/shared/TerminalDrawer";
+import { Onboarding } from "./components/Onboarding";
 import { HistoryTab } from "./components/dashboard/HistoryTab";
 import { QueueTab } from "./components/dashboard/QueueTab";
 import { OwnersTab } from "./components/dashboard/OwnersTab";
@@ -24,7 +25,6 @@ import { AllowancesTab } from "./components/dashboard/AllowancesTab";
 
 // --- Thirdweb Imports ---
 import {
-  ConnectButton,
   useActiveAccount,
   useDisconnect,
   useActiveWallet
@@ -1831,64 +1831,18 @@ const App: React.FC = () => {
 
       {!isDashboard ? (
         /* --- ONBOARDING / SETUP VIEW --- */
-        <div className="setup-container">
-          <div className={`step-card ${!loginMethod ? 'active' : 'success'}`}>
-            <div className="step-icon"><Icons.Key /></div>
-            <div style={{ width: '100%' }}>
-              <h3>1. Login Method</h3>
-              {!loginMethod ? (
-                <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexDirection: 'column' }}>
-                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                    {/* Thirdweb Connect Button with explicit chain prop */}
-                    <div className="custom-connect-wrapper">
-                      <ConnectButton
-                        client={client}
-                        chain={activeChain}
-                        theme={"dark"}
-                        connectModal={{ size: "compact" }}
-                      />
-                    </div>
-
-                    <button className="action-btn" style={{ background: '#0ea5e9', flex: 1 }} onClick={handleCreateNewPasskey} disabled={loading}>
-                      <Icons.Plus /> Create Passkey
-                    </button>
-                  </div>
-
-                  {storedPasskeys.length > 0 && (
-                    <div style={{ marginTop: '10px', borderTop: '1px solid var(--border)', paddingTop: '10px' }}>
-                      <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Saved Passkeys:</label>
-                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '5px' }}>
-                        {storedPasskeys.map(pk => (
-                          <button key={pk.rawId} className="chip" onClick={() => handleConnectPasskey(pk)}>
-                            <Icons.Key /> {pk.rawId.slice(0, 6)}...
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <p className="safe-address">{eoaAddress}</p>
-                </div>
-              )}
-            </div>
-          </div>
-          <div className={`step-card ${eoaAddress && mySafes.length === 0 ? 'active' : (mySafes.length > 0 ? 'success' : 'disabled')}`}>
-            <div className="step-icon"><Icons.Safe /></div>
-            <div>
-              <h3>2. Create Parent Safe</h3>
-              {mySafes.length === 0 && <button className="action-btn" onClick={createParentSafe} disabled={loading}>Create Safe</button>}
-            </div>
-          </div>
-          <div className={`step-card ${mySafes.length > 0 ? 'active' : 'disabled'}`}>
-            <div className="step-icon"><Icons.Nested /></div>
-            <div>
-              <h3>3. Deploy Nested Safe</h3>
-              <button className="action-btn" onClick={createNestedSafe} disabled={loading}>Deploy</button>
-            </div>
-          </div>
-        </div>
+        <Onboarding
+          loginMethod={loginMethod}
+          eoaAddress={eoaAddress}
+          storedPasskeys={storedPasskeys}
+          mySafes={mySafes}
+          loading={loading}
+          activeChain={activeChain}
+          handleCreateNewPasskey={handleCreateNewPasskey}
+          handleConnectPasskey={handleConnectPasskey}
+          createParentSafe={createParentSafe}
+          createNestedSafe={createNestedSafe}
+        />
       ) : (
         /* --- MAIN DASHBOARD VIEW --- */
         <div className="dashboard-container">
