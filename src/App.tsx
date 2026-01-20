@@ -24,7 +24,18 @@ import { toSafeSmartAccount } from "permissionless/accounts";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
 import Safe, { type PasskeyArgType } from "@safe-global/protocol-kit";
 
-import { connectPhantom } from "./utils/phantom";
+// --- Thirdweb Imports ---
+import {
+  ConnectButton,
+  useActiveAccount,
+  useDisconnect,
+  useActiveWallet
+} from "thirdweb/react";
+import { defineChain } from "thirdweb";
+import { base, baseSepolia } from "thirdweb/chains";
+import { viemAdapter } from "thirdweb/adapters/viem";
+import { client } from "./utils/thirdweb";
+
 import "./App.css";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { calculateConfigId, createAllowanceSessionStruct, createSessionStruct } from "./utils/smartSessions";
@@ -187,7 +198,7 @@ const Icons = {
   Module: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>,
   Bug: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="4" ry="4" /><path d="M16 3v5" /><path d="M8 3v5" /><path d="M3 11h18" /></svg>,
   Key: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="7.5" cy="15.5" r="5.5" /><path d="m21 2-9.6 9.6" /><path d="m15.5 7.5 3 3L22 7l-3-3" /></svg>,
-  Settings: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
+  Settings: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
   LogOut: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
 };
 
@@ -308,12 +319,43 @@ const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh,
 // --- MAIN APP ---
 
 const App: React.FC = () => {
-  // State
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
   const [eoaAddress, setEoaAddress] = useState<string>("");
-  const [loginMethod, setLoginMethod] = useState<'phantom' | 'passkey' | null>(null);
+  const [loginMethod, setLoginMethod] = useState<'thirdweb' | 'passkey' | null>(null);
   const [activePasskey, setActivePasskey] = useState<PasskeyArgType | null>(null);
   const [storedPasskeys, setStoredPasskeys] = useState<PasskeyArgType[]>([]);
+
+  // Thirdweb Hooks
+  const thirdwebAccount = useActiveAccount();
+  const thirdwebWallet = useActiveWallet();
+  const { disconnect } = useDisconnect();
+
+  // Define active chain for Thirdweb components
+  const activeChain = NETWORK === 'mainnet' ? base : baseSepolia;
+
+  // --- THIRDWEB INTEGRATION ---
+  useEffect(() => {
+    if (thirdwebAccount) {
+      // Convert Thirdweb account to Viem Client
+      const viemClient = viemAdapter.walletClient.toViem({
+        client,
+        chain: defineChain(activeChain.id),
+        account: thirdwebAccount
+      });
+
+      // Cast to fix type mismatch
+      setWalletClient(viemClient as unknown as WalletClient);
+      setEoaAddress(thirdwebAccount.address);
+      setLoginMethod('thirdweb');
+      addLog(`Wallet Connected: ${thirdwebAccount.address.slice(0, 6)}...`, "success");
+    } else {
+      if (loginMethod === 'thirdweb') {
+        setWalletClient(null);
+        setEoaAddress("");
+        setLoginMethod(null);
+      }
+    }
+  }, [thirdwebAccount, loginMethod, activeChain.id]);
 
   const [mySafes, setMySafes] = useState<StoredSafe[]>([]);
   const [myNestedSafes, setMyNestedSafes] = useState<StoredSafe[]>([]);
@@ -454,16 +496,8 @@ const App: React.FC = () => {
   }, [activeTab, selectedNestedSafeAddr, queuedTxs]);
 
   const isCurrentSafeOwner = useMemo(() => {
-    // Debugging the ownership check
-    if (!selectedSafeAddr) {
-      return false;
-    }
-    if (nestedOwners.length === 0) {
-      return false;
-    }
-
-    const match = nestedOwners.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
-    return match;
+    if (!selectedSafeAddr || nestedOwners.length === 0) return false;
+    return nestedOwners.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
   }, [selectedSafeAddr, nestedOwners]);
 
   useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs]);
@@ -491,23 +525,10 @@ const App: React.FC = () => {
     setLogs(prev => [...prev, { msg, type, timestamp: new Date().toLocaleTimeString() }]);
   };
 
-  const getClient = async (): Promise<WalletClient | null> => {
-    if (walletClient && walletClient.account) return walletClient;
-    try {
-      addLog("Connecting wallet...", "info");
-      const client = await connectPhantom();
-      if (!client.account) throw new Error("Wallet connected but no account found.");
-      setWalletClient(client);
-      setEoaAddress(client.account.address);
-      return client;
-    } catch (e: any) {
-      addLog(`Wallet connection failed: ${e.message}`, "error");
-      return null;
+  const handleLogout = async () => {
+    if (loginMethod === 'thirdweb' && thirdwebWallet) {
+      await disconnect(thirdwebWallet);
     }
-  };
-
-  const handleLogout = () => {
-    // Clear active session state
     setWalletClient(null);
     setEoaAddress("");
     setActivePasskey(null);
@@ -554,8 +575,7 @@ const App: React.FC = () => {
       let txHash;
 
       // 2. Execute based on Login Method
-      if (loginMethod === 'phantom' && walletClient) {
-
+      if (loginMethod === 'thirdweb' && walletClient) {
         // Init Client for Parent Safe
         const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
         const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
@@ -608,15 +628,6 @@ const App: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleConnectPhantom = async () => {
-    setLoading(true);
-    const client = await getClient();
-    if (client) {
-      setLoginMethod('phantom');
-    }
-    setLoading(false);
   };
 
   const handleConnectPasskey = async (passkey: PasskeyArgType) => {
@@ -680,15 +691,14 @@ const App: React.FC = () => {
   };
 
   const createParentSafe = async () => {
-    const client = await getClient();
-    if (!client) return;
+    if (!walletClient) return;
     try {
       setLoading(true);
       const safeIndex = mySafes.length + 1;
       const salt = BigInt(Date.now()).toString();
       const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
       const safeAccount = await toSafeSmartAccount({
-        client: publicClient, owners: [client], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1", saltNonce: BigInt(salt),
+        client: publicClient, owners: [walletClient], entryPoint: { address: entryPoint07Address, version: "0.7" }, version: "1.4.1", saltNonce: BigInt(salt),
       });
       const newSafe: StoredSafe = { address: safeAccount.address, salt, name: `Parent Safe ${safeIndex}` };
       const updated = [...mySafes, newSafe];
@@ -712,18 +722,13 @@ const App: React.FC = () => {
       const safeIndex = myNestedSafes.length + 1;
 
       // 2. Predict the New Safe Address
-      // Use Phantom provider if available, otherwise use Public RPC (for Passkeys)
-      const provider = loginMethod === 'phantom'
-        ? ((window as any).phantom?.ethereum || (window as any).ethereum)
-        : PUBLIC_RPC;
-
       // Ensure we have a valid signer address string for the SDK to init
-      const signerAddr = (loginMethod === 'phantom' && walletClient?.account)
+      const signerAddr = (loginMethod === 'thirdweb' && walletClient?.account)
         ? walletClient.account.address
         : selectedSafeAddr;
 
       const protocolKit = await Safe.init({
-        provider,
+        provider: RPC_URL,
         signer: signerAddr,
         predictedSafe: {
           safeAccountConfig: { owners: [selectedSafeAddr], threshold: 1 },
@@ -733,11 +738,8 @@ const App: React.FC = () => {
 
       const predictedAddr = await protocolKit.getAddress();
 
-      // 3. Deploy (Phantom) or Track (Passkey)
-      if (loginMethod === 'phantom') {
-        // Connect Wallet to sign the deployment
-        const client = await getClient();
-        if (!client) return;
+      // 3. Deploy (Thirdweb) or Track (Passkey)
+      if (loginMethod === 'thirdweb' && walletClient) {
 
         const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
         const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
@@ -745,11 +747,11 @@ const App: React.FC = () => {
         // Initialize Parent Smart Account to execute the deployment tx
         const safeAccount = await toSafeSmartAccount({
           client: publicClient,
-          owners: [client],
+          owners: [walletClient],
           entryPoint: { address: entryPoint07Address, version: "0.7" },
           version: "1.4.1",
           address: currentParent.address as Hex,
-          saltNonce: BigInt(currentParent.salt) // Safe here because Phantom safes use numeric salts
+          saltNonce: BigInt(currentParent.salt) // Safe here because Thirdweb safes use numeric salts
         });
 
         const smartAccountClient = createSmartAccountClient({
@@ -800,7 +802,6 @@ const App: React.FC = () => {
     const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
 
     try {
-      // 1. Balances
       const eth = await publicClient.getBalance({ address: address as Hex });
       setEthBalance(formatEther(eth));
       const usdc = await publicClient.readContract({ address: USDC_ADDRESS, abi: ERC20_ABI, functionName: "balanceOf", args: [address as Hex] });
@@ -1331,7 +1332,6 @@ const App: React.FC = () => {
         USDC_ADDRESS as Address
       );
 
-      // FIX: console.log directly instead of the helper wrapper for complex objects
       console.log("DEBUG-CONFIG", {
         storedConfigId: allowance.configId,
         recalculated: recalculatedConfigId,
@@ -1355,7 +1355,6 @@ const App: React.FC = () => {
         ]
       });
 
-      // FIX: console.log directly
       console.log("DEBUG-ONCHAIN", data);
 
       if (data.limit === 0n && !data.isDeleted) {
@@ -1393,11 +1392,8 @@ const App: React.FC = () => {
         args: [selectedNestedSafeAddr as Address]
       });
 
-      // --- ADD LOG HERE ---
       console.log("🔍 RAW ALLOWANCES FROM CHAIN:", onChainAllowances);
-      // --------------------
-
-      consoleLog("SCAN", "Raw Data", onChainAllowances); // (This uses the helper I added earlier)
+      consoleLog("SCAN", "Raw Data", onChainAllowances);
 
       const zombies: any[] = [];
 
@@ -1515,12 +1511,12 @@ const App: React.FC = () => {
         signerCallback = async (hash: Hex) => localAccount.sign({ hash });
       } else {
         // --- CASE B: USER-BOUND (Interactive) ---
-        const currentAddr = loginMethod === 'phantom' ? walletClient?.account?.address : eoaAddress;
+        const currentAddr = loginMethod === 'thirdweb' ? walletClient?.account?.address : eoaAddress;
         if (!currentAddr) throw new Error("No wallet connected");
 
         // 1. IS HOLDER == CONNECTED WALLET? (Direct EOA)
         if (currentAddr.toLowerCase() === requiredSigner.toLowerCase()) {
-          if (loginMethod === 'phantom' && walletClient) {
+          if (loginMethod === 'thirdweb' && walletClient) {
             signerCallback = async (hash: Hex) => {
               addLog("Requesting signature from wallet...", "info");
               return await walletClient.signMessage({
@@ -1546,9 +1542,7 @@ const App: React.FC = () => {
                   chainId: ACTIVE_CHAIN.id,
                   verifyingContract: currentAddr as Address // The Parent Safe
                 },
-                types: {
-                  SafeMessage: [{ name: 'message', type: 'bytes' }]
-                },
+                types: { SafeMessage: [{ name: 'message', type: 'bytes' }] },
                 primaryType: 'SafeMessage',
                 message: { message: hash } // Raw UserOpHash
               });
@@ -1610,7 +1604,7 @@ const App: React.FC = () => {
               let innerSigData: Hex;
 
               // Use EIP-712 Signing for Parent Safe validity
-              if (loginMethod === 'phantom' && walletClient) {
+              if (loginMethod === 'thirdweb' && walletClient) {
                 innerSigData = await walletClient.signTypedData({
                   account: currentAddr as Address,
                   domain: {
@@ -1841,7 +1835,7 @@ const App: React.FC = () => {
 
       let txHash;
 
-      if (loginMethod === 'phantom' && walletClient) {
+      if (loginMethod === 'thirdweb' && walletClient) {
         const parent = mySafes.find(s => s.address === selectedSafeAddr);
         if (!parent) throw new Error("Parent Safe info not found");
 
@@ -1974,12 +1968,10 @@ const App: React.FC = () => {
         const nestedSafeInfo = myNestedSafes.find(s => s.address === selectedNestedSafeAddr);
         if (nestedSafeInfo) {
           addLog("Nested Safe is undeployed. Adding deployment to batch...", "info");
-          const provider = loginMethod === 'phantom'
-            ? ((window as any).phantom?.ethereum || (window as any).ethereum)
-            : PUBLIC_RPC;
 
+          // Use prediction logic
           const protocolKit = await Safe.init({
-            provider,
+            provider: RPC_URL,
             signer: selectedSafeAddr,
             predictedSafe: {
               safeAccountConfig: { owners: [selectedSafeAddr], threshold: 1 },
@@ -2004,7 +1996,7 @@ const App: React.FC = () => {
 
       let txHash;
 
-      if (loginMethod === 'phantom' && walletClient) {
+      if (loginMethod === 'thirdweb' && walletClient) {
         const parent = mySafes.find(s => s.address === selectedSafeAddr);
         if (!parent) throw new Error("Parent Safe info not found");
 
@@ -2111,11 +2103,18 @@ const App: React.FC = () => {
               <h3>1. Login Method</h3>
               {!loginMethod ? (
                 <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexDirection: 'column' }}>
-                  <div style={{ display: 'flex', gap: '10px' }}>
-                    <button className="action-btn" onClick={handleConnectPhantom} disabled={loading}>
-                      <Icons.Wallet /> Phantom Wallet
-                    </button>
-                    <button className="action-btn" style={{ background: '#0ea5e9' }} onClick={handleCreateNewPasskey} disabled={loading}>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                    {/* Thirdweb Connect Button with explicit chain prop */}
+                    <div className="custom-connect-wrapper">
+                      <ConnectButton
+                        client={client}
+                        chain={activeChain}
+                        theme={"dark"}
+                        connectModal={{ size: "compact" }}
+                      />
+                    </div>
+
+                    <button className="action-btn" style={{ background: '#0ea5e9', flex: 1 }} onClick={handleCreateNewPasskey} disabled={loading}>
                       <Icons.Plus /> Create Passkey
                     </button>
                   </div>
@@ -2449,8 +2448,6 @@ const App: React.FC = () => {
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                     <TokenSelector />
-
-                    {/* NEW: Allowance Name Input */}
                     <div className="input-group">
                       <label>Label (e.g. "Nanny", "Gym")</label>
                       <input type="text" value={allowanceName} onChange={e => setAllowanceName(e.target.value)} placeholder="Untitled Budget" />
@@ -2520,59 +2517,55 @@ const App: React.FC = () => {
 
                   <div className="section-label" style={{ marginTop: '2.5rem' }}>Active Budgets (Local)</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {myAllowances.length === 0 ? (
-                      <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>No active budgets.</div>
-                    ) : (
-                      myAllowances.map((al, i) => (
-                        <div key={i} className="owner-row" style={{ borderLeft: '3px solid var(--primary)' }}>
-                          <div style={{ flex: 1 }}>
-                            <div style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--primary)' }}>
-                              {al.name || "Untitled"}
-                            </div>
-                            <div style={{ fontWeight: '500' }}>
-                              {al.amount} {al.token}
-                              <span style={{ fontSize: '0.75rem', color: 'var(--success)', marginLeft: '6px' }}>(Resets every {al.interval})</span>
-                            </div>
-                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                              ID: {al.permissionId.slice(0, 14)}...
-                            </div>
+                    {myAllowances.map((al, i) => (
+                      <div key={i} className="owner-row" style={{ borderLeft: '3px solid var(--primary)' }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '0.9rem', fontWeight: 'bold', color: 'var(--primary)' }}>
+                            {al.name || "Untitled"}
                           </div>
-
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            <button
-                              className="action-btn secondary small"
-                              style={{ borderColor: '#a855f7', color: '#a855f7', border: '1px solid', background: 'rgba(168, 85, 247, 0.1)' }}
-                              onClick={() => handleCreateLinkedSchedule(al)}
-                              title="Create a one-off scheduled payment linked to this budget"
-                            >
-                              <Icons.Plus /> Link Schedule
-                            </button>
-                            <button
-                              className="action-btn secondary small"
-                              onClick={() => {
-                                setSignerMode('session');
-                                setActiveSession(al);
-                                setActiveTab('transfer');
-                                addLog(`Selected Key: ${al.permissionId.slice(0, 8)}...`, "info");
-                              }}
-                            >
-                              Use Key
-                            </button>
-                            <button className="icon-btn" onClick={() => handleCheckSpecific(al)} title="Check Live Status">
-                              <Icons.Refresh />
-                            </button>
-                            <button
-                              className="icon-btn"
-                              style={{ color: '#ef4444', borderColor: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px' }}
-                              onClick={() => handleRevokeAllowance(al)}
-                              disabled={loading || !isCurrentSafeOwner}
-                            >
-                              <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>
-                            </button>
+                          <div style={{ fontWeight: '500' }}>
+                            {al.amount} {al.token}
+                            <span style={{ fontSize: '0.75rem', color: 'var(--success)', marginLeft: '6px' }}>(Resets every {al.interval})</span>
+                          </div>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                            ID: {al.permissionId.slice(0, 14)}...
                           </div>
                         </div>
-                      ))
-                    )}
+
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button
+                            className="action-btn secondary small"
+                            style={{ borderColor: '#a855f7', color: '#a855f7', border: '1px solid', background: 'rgba(168, 85, 247, 0.1)' }}
+                            onClick={() => handleCreateLinkedSchedule(al)}
+                            title="Create a one-off scheduled payment linked to this budget"
+                          >
+                            <Icons.Plus /> Link Schedule
+                          </button>
+                          <button
+                            className="action-btn secondary small"
+                            onClick={() => {
+                              setSignerMode('session');
+                              setActiveSession(al);
+                              setActiveTab('transfer');
+                              addLog(`Selected Key: ${al.permissionId.slice(0, 8)}...`, "info");
+                            }}
+                          >
+                            Use Key
+                          </button>
+                          <button className="icon-btn" onClick={() => handleCheckSpecific(al)} title="Check Live Status">
+                            <Icons.Refresh />
+                          </button>
+                          <button
+                            className="icon-btn"
+                            style={{ color: '#ef4444', borderColor: '#ef4444', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '6px' }}
+                            onClick={() => handleRevokeAllowance(al)}
+                            disabled={loading || !isCurrentSafeOwner}
+                          >
+                            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   {/* On-Chain Audit Section */}

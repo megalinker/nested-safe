@@ -3,15 +3,14 @@ import { base, baseSepolia } from "viem/chains";
 // 1. Determine Network Mode
 export const NETWORK = import.meta.env.VITE_NETWORK === 'mainnet' ? 'mainnet' : 'sepolia';
 
-// 2. Export Chain Object & ID
+// 2. Export Viem Chain Object & ID
 export const ACTIVE_CHAIN = NETWORK === 'mainnet' ? base : baseSepolia;
 export const CHAIN_ID = ACTIVE_CHAIN.id;
-export const CHAIN_ID_HEX = `0x${CHAIN_ID.toString(16)}`;
 
 // 3. RPC Configuration
 export const RPC_URL = NETWORK === 'mainnet'
-  ? import.meta.env.VITE_RPC_URL_MAINNET
-  : import.meta.env.VITE_RPC_URL_SEPOLIA;
+  ? import.meta.env.VITE_RPC_URL_MAINNET || "https://mainnet.base.org"
+  : import.meta.env.VITE_RPC_URL_SEPOLIA || "https://sepolia.base.org";
 
 const PIMLICO_API_KEY = import.meta.env.VITE_PIMLICO_API_KEY;
 const PIMLICO_NETWORK_SLUG = NETWORK === 'mainnet' ? 'base' : 'base-sepolia';
@@ -19,9 +18,10 @@ const PIMLICO_NETWORK_SLUG = NETWORK === 'mainnet' ? 'base' : 'base-sepolia';
 export const BUNDLER_URL = `https://api.pimlico.io/v1/${PIMLICO_NETWORK_SLUG}/rpc?apikey=${PIMLICO_API_KEY}`;
 export const PAYMASTER_URL = `https://api.pimlico.io/v2/${PIMLICO_NETWORK_SLUG}/rpc?apikey=${PIMLICO_API_KEY}`;
 
-// 4. Contract Addresses
+// 4. Thirdweb Config
+export const THIRDWEB_CLIENT_ID = import.meta.env.VITE_THIRDWEB_CLIENT_ID;
 
-// USDC Address
+// 5. Contract Addresses
 export const USDC_ADDRESS = NETWORK === 'mainnet'
   ? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
   : "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
