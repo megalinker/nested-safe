@@ -12,6 +12,10 @@ import { createSmartAccountClient } from "permissionless";
 import { toSafeSmartAccount } from "permissionless/accounts";
 import { createPimlicoClient } from "permissionless/clients/pimlico";
 import Safe, { type PasskeyArgType } from "@safe-global/protocol-kit";
+import { Icons } from "./components/shared/Icons";
+import { SafeListItem } from "./components/shared/SafeListItem";
+import { TerminalDrawer } from "./components/shared/TerminalDrawer";
+import { TokenSelector } from "./components/shared/TokenSelector";
 
 // --- Thirdweb Imports ---
 import {
@@ -120,100 +124,10 @@ const encodeMultiSend = (txs: { to: string; value: bigint; data: string; operati
   });
 };
 
-// --- ICONS ---
-const Icons = {
-  Wallet: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M20 7h-9" /><path d="M14 17H5" /><circle cx="17" cy="17" r="3" /><path d="M7 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2h3a2 2 0 0 1 2 2v2h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3" /></svg>,
-  Safe: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>,
-  Nested: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>,
-  Check: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" /></svg>,
-  Copy: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>,
-  Refresh: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>,
-  Plus: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
-  ChevronDown: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9" /></svg>,
-  ExternalLink: () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>,
-  Module: () => <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>,
-  Bug: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="4" ry="4" /><path d="M16 3v5" /><path d="M8 3v5" /><path d="M3 11h18" /></svg>,
-  Key: () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="7.5" cy="15.5" r="5.5" /><path d="m21 2-9.6 9.6" /><path d="m15.5 7.5 3 3L22 7l-3-3" /></svg>,
-  Settings: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
-  LogOut: () => <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
-};
-
 // Token Constants
 const TOKENS = {
   ETH: { symbol: 'ETH', decimals: 18, isNative: true },
   USDC: { symbol: 'USDC', decimals: 6, isNative: false, address: USDC_ADDRESS }
-};
-
-// --- COMPONENTS ---
-
-const SafeListItem = ({ safe, isSelected, onClick, type, balanceInfo, onRefresh, onSettings }: {
-  safe: StoredSafe,
-  isSelected: boolean,
-  onClick: () => void,
-  type: 'parent' | 'nested',
-  balanceInfo?: { eth: string | null, usdc: string | null },
-  onRefresh?: () => void,
-  onSettings?: () => void
-}) => {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(safe.address);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const gradient = type === 'parent'
-    ? `linear-gradient(135deg, #${safe.address.slice(2, 8)}, #${safe.address.slice(-6)})`
-    : `linear-gradient(135deg, #10b981, #0ea5e9)`;
-
-  return (
-    <div className={`safe-card ${isSelected ? 'selected' : ''}`} onClick={onClick}>
-      <div className="safe-card-header" style={{ justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div className="safe-avatar" style={{ background: gradient }}></div>
-          <div className="safe-name">{safe.name}</div>
-        </div>
-
-        <div style={{ display: 'flex', gap: '4px' }}>
-          {type === 'parent' && isSelected && onSettings && (
-            <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onSettings(); }} title="Manage Signers">
-              <Icons.Settings />
-            </button>
-          )}
-          {type === 'nested' && isSelected && onRefresh && (
-            <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onRefresh(); }} title="Refresh Balance">
-              <Icons.Refresh />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="safe-meta">
-        <span className="safe-address">{safe.address.slice(0, 6)}...{safe.address.slice(-4)}</span>
-        <button className="icon-btn" onClick={handleCopy} title="Copy Address">
-          {copied ? <Icons.Check /> : <Icons.Copy />}
-        </button>
-      </div>
-
-      {type === 'nested' && balanceInfo && (
-        <div style={{ marginTop: '12px', fontSize: '0.85rem', color: 'var(--text-secondary)', borderTop: '1px solid var(--border)', paddingTop: '8px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>ETH</span>
-            <span style={{ color: 'var(--text-main)', fontWeight: '500' }}>
-              {balanceInfo.eth !== null ? balanceInfo.eth : <span style={{ opacity: 0.5 }}>...</span>}
-            </span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>USDC</span>
-            <span style={{ color: 'var(--text-main)', fontWeight: '500' }}>
-              {balanceInfo.usdc !== null ? balanceInfo.usdc : <span style={{ opacity: 0.5 }}>...</span>}
-            </span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
 };
 
 // --- MAIN APP ---
@@ -290,7 +204,6 @@ const App: React.FC = () => {
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  const logsEndRef = useRef<HTMLDivElement>(null);
 
   // Inputs
   const [recipient, setRecipient] = useState("");
@@ -399,8 +312,6 @@ const App: React.FC = () => {
     if (!selectedSafeAddr || nestedOwners.length === 0) return false;
     return nestedOwners.some(o => o.toLowerCase() === selectedSafeAddr.toLowerCase());
   }, [selectedSafeAddr, nestedOwners]);
-
-  useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs]);
 
   const timePreviews = useMemo(() => {
     if (!scheduleDate) return null;
@@ -1897,26 +1808,6 @@ const App: React.FC = () => {
     await proposeTransaction(selectedNestedSafeAddr, 0n, data, `Change Threshold to ${newThresholdInput}`, 0, 0);
   };
 
-  // Helper Component: Token Selector
-  const TokenSelector = () => (
-    <div style={{ display: 'flex', gap: '8px', marginBottom: '1rem' }}>
-      {(['ETH', 'USDC'] as const).map(t => (
-        <button
-          key={t}
-          onClick={() => { setSelectedToken(t); setSendAmount(""); setScheduleAmount(""); }}
-          className="chip"
-          style={{
-            borderColor: selectedToken === t ? 'var(--primary)' : 'var(--border)',
-            background: selectedToken === t ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
-            color: selectedToken === t ? 'white' : 'var(--text-secondary)'
-          }}
-        >
-          {t}
-        </button>
-      ))}
-    </div>
-  );
-
   const isDashboard = loginMethod !== null;
 
   const currentSafeQueue = queuedTxs.filter(t => {
@@ -2134,7 +2025,14 @@ const App: React.FC = () => {
                   </div>
 
                   {/* Token Selector logic */}
-                  <TokenSelector />
+                  <TokenSelector
+                    selectedToken={selectedToken}
+                    onSelect={(t) => {
+                      setSelectedToken(t);
+                      setSendAmount("");
+                      setScheduleAmount("");
+                    }}
+                  />
 
                   {/* Warning if the selected token in UI doesn't match what the key is authorized for */}
                   {signerMode === 'session' && selectedToken !== activeSession.token && (
@@ -2220,7 +2118,14 @@ const App: React.FC = () => {
 
                   {!hasStoredSchedule ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                      <TokenSelector />
+                      <TokenSelector
+                        selectedToken={selectedToken}
+                        onSelect={(t) => {
+                          setSelectedToken(t);
+                          setSendAmount("");
+                          setScheduleAmount("");
+                        }}
+                      />
                       <div className="input-group">
                         <label>Recipient Address</label>
                         <input placeholder="0x..." value={scheduleRecipient} onChange={e => setScheduleRecipient(e.target.value)} />
@@ -2286,7 +2191,14 @@ const App: React.FC = () => {
                   </p>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                    <TokenSelector />
+                    <TokenSelector
+                      selectedToken={selectedToken}
+                      onSelect={(t) => {
+                        setSelectedToken(t);
+                        setSendAmount("");
+                        setScheduleAmount("");
+                      }}
+                    />
                     <div className="input-group">
                       <label>Label (e.g. "Nanny", "Gym")</label>
                       <input type="text" value={allowanceName} onChange={e => setAllowanceName(e.target.value)} placeholder="Untitled Budget" />
@@ -2660,17 +2572,11 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* TERMINAL DRAWER */}
-      <div className="terminal-drawer" style={{ transform: loading || logs.length > 0 ? 'translateY(0)' : 'translateY(100%)' }}>
-        <div className="terminal-header" onClick={() => setLogs([])}>
-          <span>System Logs (Click to clear)</span>
-          <Icons.ChevronDown />
-        </div>
-        <div className="terminal-content">
-          {logs.map((l, i) => <div key={i} className={`log-entry ${l.type}`}>[{l.timestamp}] {l.msg}</div>)}
-          <div ref={logsEndRef} />
-        </div>
-      </div>
+      <TerminalDrawer
+        logs={logs}
+        loading={loading}
+        onClear={() => setLogs([])}
+      />
 
       {/* PARENT SETTINGS MODAL */}
       {isParentSettingsOpen && (
