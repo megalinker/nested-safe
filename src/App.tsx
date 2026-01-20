@@ -1503,7 +1503,7 @@ const App: React.FC = () => {
 
       const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
 
-      let signerCallback;
+      let signerCallback: ((hash: Hex) => Promise<Hex>) | undefined;
 
       if (privateKey) {
         // --- CASE A: AUTOMATED / SCHEDULED (Ephemeral Key) ---
@@ -1599,13 +1599,10 @@ const App: React.FC = () => {
               throw new Error(`Parent Safe (${parentSafe.name}) is NOT deployed on-chain yet. Please switch to it and send a transaction first.`);
             }
 
-            signerCallback = async (hash: Hex) => {
-              addLog(`Requesting signature on behalf of Safe ${parentSafe.name}...`, "info");
-              let innerSigData: Hex;
-
-              // Use EIP-712 Signing for Parent Safe validity
-              if (loginMethod === 'thirdweb' && walletClient) {
-                innerSigData = await walletClient.signTypedData({
+            if (loginMethod === 'thirdweb' && walletClient) {
+              signerCallback = async (hash: Hex) => {
+                addLog(`Requesting signature on behalf of Safe ${parentSafe.name}...`, "info");
+                return await walletClient.signTypedData({
                   account: currentAddr as Address,
                   domain: {
                     chainId: ACTIVE_CHAIN.id,
@@ -1617,77 +1614,19 @@ const App: React.FC = () => {
                   primaryType: 'SafeMessage',
                   message: { message: hash }
                 });
-              } else if (loginMethod === 'passkey' && activePasskey) {
-                // Passkey Mode: Use Safe4337Pack Protocol Kit to sign the hash
-                addLog("Requesting Passkey signature...", "info");
-                const safe4337Pack = await getSafe4337Pack(activePasskey);
-
-                // 1. Get the WebAuthn Signer Address (Owner of the Parent Safe)
-                const owners = await safe4337Pack.protocolKit.getOwners();
-                const webAuthnSignerAddress = owners[0] as Address;
-
-                // 2. Calculate the EIP-712 hash for the Parent Safe
-                // NOTE: We do NOT wrap 'hash' in hashMessage() here.
-                // The SmartSession module passes the raw UserOpHash to the validator (OwnableValidator).
-                // OwnableValidator's 'validateSignatureWithData' uses the hash as-is.
-                // The Parent Safe then wraps that hash into a SafeMessage.
-                const safeMessageHash = hashTypedData({
-                  domain: {
-                    chainId: ACTIVE_CHAIN.id,
-                    verifyingContract: requiredSigner as Address // The Remote Parent Safe
-                  },
-                  types: {
-                    SafeMessage: [{ name: 'message', type: 'bytes' }]
-                  },
-                  primaryType: 'SafeMessage',
-                  message: { message: hash } // Pass RAW UserOpHash
-                });
-
-                consoleLog("SIGNER", "Nested SafeMessage Hash (Challenge)", safeMessageHash);
-
-                // 3. Sign hash to get RAW WebAuthn data
-                const sigResult = await safe4337Pack.protocolKit.signHash(safeMessageHash);
-                const rawWebAuthnSig = sigResult.data as Hex;
-
-                // 4. Wrap into Safe Contract Signature Format (v=0)
-                const r_auth = pad(webAuthnSignerAddress, { size: 32 });
-                const s_auth = pad(toHex(65), { size: 32 }); // Offset to dynamic data
-                const v_auth = "0x00";
-                const len_auth = pad(toHex(size(rawWebAuthnSig)), { size: 32 });
-
-                innerSigData = encodePacked(
-                  ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
-                  [r_auth, s_auth, v_auth, len_auth, rawWebAuthnSig]
-                );
-
-              } else {
-                throw new Error("Unknown login method for signing.");
-              }
-
-              // 5. Wrap for Nested Safe's OwnableValidator (Contract Signature Format)
-              // [r=ParentSafe] [s=Offset] [v=0] [len] [innerSigData]
-
-              const r = pad(requiredSigner as Hex, { size: 32 });
-              const s = pad(toHex(65), { size: 32 });
-              const v = "0x00";
-
-              const innerSigLength = size(innerSigData);
-              const len = pad(toHex(innerSigLength), { size: 32 });
-
-              const wrappedSignature = encodePacked(
-                ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
-                [r, s, v, len, innerSigData]
-              );
-
-              consoleLog("SIGNER", "Final Wrapped Signature (for UserOp)", wrappedSignature);
-
-              return wrappedSignature;
-            };
-
-          } else {
-            throw new Error(`Wrong Wallet! Connected: ${currentAddr.slice(0, 6)}... | Required: ${requiredSigner.slice(0, 6)}...`);
+              };
+            } else if (loginMethod === 'passkey') {
+              throw new Error("Cross-signing for other Safes is not currently supported with Passkeys in this demo.");
+            } else {
+              throw new Error(`Wrong Wallet! Connected: ${currentAddr.slice(0, 6)}... | Required: ${requiredSigner.slice(0, 6)}...`);
+            }
           }
         }
+      }
+
+      // 2. Critical Check: Ensure we have a signer before proceeding
+      if (!signerCallback) {
+        throw new Error("Could not determine a valid signer method for this session.");
       }
 
       // --- CLIENT SETUP & EXECUTION ---
