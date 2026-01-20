@@ -18,6 +18,9 @@ import { TerminalDrawer } from "./components/shared/TerminalDrawer";
 import { TokenSelector } from "./components/shared/TokenSelector";
 import { HistoryTab } from "./components/dashboard/HistoryTab";
 import { QueueTab } from "./components/dashboard/QueueTab";
+import { OwnersTab } from "./components/dashboard/OwnersTab";
+import { TransferTab } from "./components/dashboard/TransferTab";
+
 // --- Thirdweb Imports ---
 import {
   ConnectButton,
@@ -2013,100 +2016,24 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {/* --- TRANSFER TAB --- */}
               {activeTab === 'transfer' && (
-                <>
-                  <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>{signerMode === 'session' ? "Make Transfer (Session Mode)" : "Make Transfer"}</span>
-                    {signerMode === 'session' && (
-                      <span style={{ color: 'var(--success)', fontSize: '0.7rem', fontWeight: 'bold' }}>
-                        USING SESSION KEY
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Token Selector logic */}
-                  <TokenSelector
-                    selectedToken={selectedToken}
-                    onSelect={(t) => {
-                      setSelectedToken(t);
-                      setSendAmount("");
-                      setScheduleAmount("");
-                    }}
-                  />
-
-                  {/* Warning if the selected token in UI doesn't match what the key is authorized for */}
-                  {signerMode === 'session' && selectedToken !== activeSession.token && (
-                    <div style={{
-                      background: 'rgba(239, 68, 68, 0.1)',
-                      color: '#f87171',
-                      padding: '10px',
-                      borderRadius: '8px',
-                      marginBottom: '15px',
-                      fontSize: '0.85rem',
-                      border: '1px solid rgba(239, 68, 68, 0.2)'
-                    }}>
-                      ⚠️ This session key is authorized for <strong>{activeSession.token}</strong>,
-                      but you have <strong>{selectedToken}</strong> selected.
-                    </div>
-                  )}
-
-                  <div className="input-group">
-                    <label>Recipient Address</label>
-                    <input placeholder="0x..." value={recipient} onChange={e => setRecipient(e.target.value)} />
-                  </div>
-
-                  <div className="input-group">
-                    <label>Amount ({selectedToken})</label>
-                    <input type="number" placeholder="0.0" value={sendAmount} onChange={e => setSendAmount(e.target.value)} />
-                  </div>
-
-                  <button
-                    className="action-btn"
-                    style={{
-                      background: signerMode === 'session' ? 'var(--success)' : 'var(--primary)',
-                      boxShadow: signerMode === 'session' ? '0 0 20px rgba(16, 185, 129, 0.2)' : 'none'
-                    }}
-                    onClick={() => {
-                      if (!sendAmount || !recipient) return;
-
-                      if (signerMode === 'session') {
-                        // --- SESSION EXECUTION ---
-                        if (selectedToken !== activeSession.token) {
-                          addLog(`Cannot spend ${selectedToken}: Key is only for ${activeSession.token}`, 'error');
-                          return;
-                        }
-                        handleSessionSpend(); // This is the new direct-execution function
-                      } else {
-                        // --- MULTISIG PROPOSAL ---
-                        if (selectedToken === 'ETH') {
-                          proposeTransaction(recipient, parseEther(sendAmount), "0x", `Transfer ${sendAmount} ETH`);
-                        } else {
-                          const amount = parseUnits(sendAmount, 6);
-                          const data = encodeFunctionData({ abi: ERC20_ABI, functionName: "transfer", args: [recipient as Address, amount] });
-                          proposeTransaction(USDC_ADDRESS, 0n, data, `Transfer ${sendAmount} USDC`);
-                        }
-                      }
-                    }}
-                    disabled={loading || (signerMode === 'main' && !isCurrentSafeOwner)}
-                  >
-                    {signerMode === 'session'
-                      ? `Spend via Allowance (${activeSession.token})`
-                      : nestedThreshold > 1
-                        ? `Create Proposal (${nestedThreshold} sigs needed)`
-                        : "Execute Transaction"
-                    }
-                  </button>
-
-                  {signerMode === 'session' && (
-                    <div style={{ marginTop: '15px', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                      <strong>Current Session Limits:</strong><br />
-                      • Max Spend: {activeSession.amount} {activeSession.token}<br />
-                      • Max Txs: {activeSession.usage}<br />
-                      • Permission ID: <span style={{ fontFamily: 'monospace' }}>{activeSession.permissionId.slice(0, 16)}...</span>
-                    </div>
-                  )}
-                </>
+                <TransferTab
+                  signerMode={signerMode}
+                  activeSession={activeSession}
+                  selectedToken={selectedToken}
+                  setSelectedToken={setSelectedToken}
+                  recipient={recipient}
+                  setRecipient={setRecipient}
+                  sendAmount={sendAmount}
+                  setSendAmount={setSendAmount}
+                  setScheduleAmount={setScheduleAmount}
+                  loading={loading}
+                  isCurrentSafeOwner={isCurrentSafeOwner}
+                  nestedThreshold={nestedThreshold}
+                  handleSessionSpend={handleSessionSpend}
+                  proposeTransaction={proposeTransaction}
+                  addLog={addLog}
+                />
               )}
 
               {/* --- SCHEDULED TAB --- */}
@@ -2404,58 +2331,20 @@ const App: React.FC = () => {
                 />
               )}
 
-              {/* --- OWNERS TAB --- */}
               {activeTab === 'owners' && (
-                <>
-                  <div className="section-label">Active Owners</div>
-                  {nestedOwners.map(owner => (
-                    <div key={owner} className="owner-row">
-                      <div className="owner-info">
-                        <span className="owner-addr">{owner}</span>
-                        {mySafes.find(s => s.address.toLowerCase() === owner.toLowerCase()) && <span className="owner-tag">Managed by You</span>}
-                      </div>
-                    </div>
-                  ))}
-
-                  <div className="section-label" style={{ marginTop: '1.5rem' }}>Add from my Parent Safes</div>
-                  <div className="quick-add-container">
-                    {mySafes
-                      .filter(safe => !nestedOwners.some(o => o.toLowerCase() === safe.address.toLowerCase()))
-                      .map(safe => (
-                        <button
-                          key={safe.address}
-                          className="chip"
-                          onClick={() => handleAddOwner(safe.address)}
-                          disabled={loading || !isCurrentSafeOwner}
-                        >
-                          <Icons.Plus /> Add {safe.name}
-                        </button>
-                      ))}
-                    {mySafes.every(safe => nestedOwners.some(o => o.toLowerCase() === safe.address.toLowerCase())) && (
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>All your safes are already owners.</span>
-                    )}
-                  </div>
-
-                  <div className="input-group" style={{ marginTop: '1rem' }}>
-                    <label>Add External Owner Address</label>
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                      <input value={newOwnerInput} onChange={e => setNewOwnerInput(e.target.value)} placeholder="0x..." />
-                      <button className="action-btn small" onClick={() => handleAddOwner()} disabled={loading || !isCurrentSafeOwner}>Propose Add</button>
-                    </div>
-                  </div>
-                  <hr style={{ margin: '2rem 0', borderColor: 'var(--border)' }} />
-                  <div className="section-label">Security Threshold</div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-1)', padding: '1rem', borderRadius: '8px', border: '1px solid var(--border)' }}>
-                    <div>
-                      <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Current Policy</div>
-                      <div style={{ fontSize: '1.1rem', fontWeight: '600' }}>{nestedThreshold} out of {nestedOwners.length} signatures</div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <input type="number" min="1" max={nestedOwners.length} value={newThresholdInput} onChange={(e) => setNewThresholdInput(parseInt(e.target.value))} style={{ width: '60px' }} />
-                      <button className="action-btn small" onClick={handleUpdateThreshold} disabled={loading || !isCurrentSafeOwner}>Update</button>
-                    </div>
-                  </div>
-                </>
+                <OwnersTab
+                  nestedOwners={nestedOwners}
+                  mySafes={mySafes}
+                  nestedThreshold={nestedThreshold}
+                  loading={loading}
+                  isCurrentSafeOwner={isCurrentSafeOwner}
+                  handleAddOwner={handleAddOwner}
+                  handleUpdateThreshold={handleUpdateThreshold}
+                  newThresholdInput={newThresholdInput}
+                  setNewThresholdInput={setNewThresholdInput}
+                  newOwnerInput={newOwnerInput}
+                  setNewOwnerInput={setNewOwnerInput}
+                />
               )}
 
               {activeTab === 'history' && (
