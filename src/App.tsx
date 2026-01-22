@@ -5,7 +5,7 @@ import {
   formatUnits, parseUnits, concat, type Address, toHex,
   hashTypedData, encodePacked, size
 } from "viem";
-import { SAFE_ABI, ADAPTER_7579_ABI, ERC20_ABI, ENABLE_SESSIONS_ABI, PERIODIC_POLICY_ABI, MULTI_SEND_ABI } from "./abis";
+import { SAFE_ABI, ERC20_ABI, ENABLE_SESSIONS_ABI, PERIODIC_POLICY_ABI, MULTI_SEND_ABI } from "./abis";
 import type { StoredSafe, LogEntry, SafeTx, QueuedTx } from "./types";
 import { entryPoint07Address } from "viem/account-abstraction";
 import { createSmartAccountClient } from "permissionless";
@@ -36,7 +36,7 @@ import { client } from "./utils/thirdweb";
 
 import "./App.css";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { calculateConfigId, createAllowanceSessionStruct, createSessionStruct } from "./utils/smartSessions";
+import { calculateConfigId, createAllowanceSessionStruct } from "./utils/smartSessions";
 import { getPermissionId, getSafe7579SessionAccount } from "./utils/safe7579";
 import { createPasskey, loadPasskeys, storePasskey } from "./utils/passkeys";
 import { executePasskeyTransaction, getSafeInfo, getSafe4337Pack } from "./utils/safePasskeyClient";
@@ -48,9 +48,11 @@ import {
   USDC_ADDRESS,
   PERIODIC_ERC20_POLICY,
   SMART_SESSIONS_VALIDATOR_ADDRESS,
-  SAFE_7579_ADAPTER_ADDRESS,
   MULTI_SEND_ADDRESS
 } from "./config";
+import { prepareAllowanceProposal, prepareCleanupAllowance, prepareRevokeAllowance, prepareScheduleProposal } from "./services/sessionProposalService";
+import { executeAutomatedSchedule } from "./services/sessionExecutionService";
+import { scanOnChainAllowances } from "./services/sessionAuditService";
 
 // --- LOGGING HELPER ---
 const consoleLog = (stage: string, message: string, data?: any) => {
@@ -100,9 +102,6 @@ const SAFE_TX_SERVICE_URL = NETWORK === 'mainnet'
   ? "https://safe-transaction-base.safe.global/api/v1"
   : "https://safe-transaction-base-sepolia.safe.global/api/v1";
 
-// Storage slot for Safe Fallback Handler
-const FALLBACK_HANDLER_STORAGE_SLOT = "0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5";
-
 /**
  * Encodes a batch of transactions for the Safe MultiSend contract
  */
@@ -127,12 +126,6 @@ const encodeMultiSend = (txs: { to: string; value: bigint; data: string; operati
       ),
     ],
   });
-};
-
-// Token Constants
-const TOKENS = {
-  ETH: { symbol: 'ETH', decimals: 18, isNative: true },
-  USDC: { symbol: 'USDC', decimals: 6, isNative: false, address: USDC_ADDRESS }
 };
 
 // --- MAIN APP ---
@@ -691,97 +684,27 @@ const App: React.FC = () => {
     setLoading(true);
 
     try {
-      addLog(`Checking on-chain status for ${selectedNestedSafeAddr.slice(0, 8)}...`, "info");
+      addLog(`Preparing schedule proposal for ${selectedNestedSafeAddr.slice(0, 8)}...`, "info");
 
-      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
-      const targetSafe = selectedNestedSafeAddr as Address;
-      const adapterAddr = SAFE_7579_ADAPTER_ADDRESS.toLowerCase();
+      const { batch, log, storageData } = await prepareScheduleProposal(
+        selectedNestedSafeAddr,
+        scheduleRecipient,
+        scheduleAmount,
+        selectedToken,
+        timePreviews.unix
+      );
 
-      // 1. PERFORM ON-CHAIN CHECKS
-      const [isModuleEnabled, rawFallback] = await Promise.all([
-        publicClient.readContract({
-          address: targetSafe,
-          abi: SAFE_ABI,
-          functionName: "isModuleEnabled",
-          args: [SAFE_7579_ADAPTER_ADDRESS]
-        }).catch(() => false),
-        publicClient.getStorageAt({
-          address: targetSafe,
-          slot: FALLBACK_HANDLER_STORAGE_SLOT as Hex
-        }).catch(() => "0x")
-      ]);
+      log.forEach(l => addLog(l, "info"));
 
-      const currentFallback = rawFallback && rawFallback !== "0x"
-        ? `0x${rawFallback.slice(-40)}`.toLowerCase()
-        : "0x";
+      const description = `Setup 7579 + Enable ${selectedToken} Session`;
 
-      const batch: { to: string; value: bigint; data: string; operation: number }[] = [];
-
-      // 2. ONLY ADD SETUP STEPS IF THE MODULE IS NOT ENABLED
-      if (!isModuleEnabled) {
-        addLog("Bundling first-time 7579 setup...", "info");
-
-        // A. Enable Module
-        batch.push({
-          to: targetSafe, value: 0n, operation: 0,
-          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "enableModule", args: [SAFE_7579_ADAPTER_ADDRESS] })
-        });
-
-        // B. Initialize Adapter (This maps the Safe to the Validator in the Adapter)
-        const initData = encodeFunctionData({
-          abi: ADAPTER_7579_ABI,
-          functionName: "initializeAccount",
-          args: [
-            [{ module: SMART_SESSIONS_VALIDATOR_ADDRESS, initData: "0x", moduleType: 1n }],
-            { registry: "0x0000000000000000000000000000000000000000", attesters: [], threshold: 0 }
-          ]
-        });
-        batch.push({
-          to: SAFE_7579_ADAPTER_ADDRESS, value: 0n, operation: 0,
-          data: concat([initData, targetSafe])
-        });
-      }
-
-      // C. Ensure Fallback Handler is set (Separate from module enable check for safety)
-      if (currentFallback !== adapterAddr) {
-        batch.push({
-          to: targetSafe, value: 0n, operation: 0,
-          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "setFallbackHandler", args: [SAFE_7579_ADAPTER_ADDRESS] })
-        });
-      }
-
-      // 3. PREPARE THE NEW SESSION (Always required)
-      const privateKey = generatePrivateKey();
-      const sessionOwner = privateKeyToAccount(privateKey);
-      const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
-
-      const session = selectedToken === 'ETH'
-        ? createSessionStruct(sessionOwner.address, scheduleRecipient as Address, "0xFFFFFFFF", parseEther(scheduleAmount), salt, timePreviews.unix)
-        : createSessionStruct(sessionOwner.address, USDC_ADDRESS as Address, "0xa9059cbb", 0n, salt, timePreviews.unix);
-
-      const expectedId = getPermissionId(session);
-
-      batch.push({
-        to: SMART_SESSIONS_VALIDATOR_ADDRESS, value: 0n, operation: 0,
-        data: encodeFunctionData({
-          abi: ENABLE_SESSIONS_ABI,
-          functionName: "enableSessions",
-          args: [[session]]
-        })
-      });
-
-      // 4. PROPOSE
       if (batch.length > 1) {
-        await proposeTransaction(MULTI_SEND_ADDRESS, 0n, encodeMultiSend(batch), `Setup 7579 + Enable ${selectedToken} Session`, 0, 1);
+        await proposeTransaction(MULTI_SEND_ADDRESS, 0n, encodeMultiSend(batch), description, 0, 1);
       } else {
-        await proposeTransaction(SMART_SESSIONS_VALIDATOR_ADDRESS, 0n, batch[0].data as Hex, `Enable ${selectedToken} Session`, 0, 0);
+        await proposeTransaction(batch[0].to, 0n, batch[0].data, description, 0, 0);
       }
 
-      localStorage.setItem("scheduled_session", JSON.stringify({
-        privateKey, session, target: scheduleRecipient, amount: scheduleAmount,
-        token: selectedToken, permissionId: expectedId, startDate: timePreviews.local
-      }));
-
+      localStorage.setItem("scheduled_session", JSON.stringify(storageData));
       setHasStoredSchedule(true);
       setScheduledInfo({ target: scheduleRecipient, amount: scheduleAmount });
       setActiveTab('queue');
@@ -797,70 +720,18 @@ const App: React.FC = () => {
   const handleExecuteSchedule = async () => {
     const stored = localStorage.getItem("scheduled_session");
     if (!stored) return;
-
     setLoading(true);
+
     try {
-      const { privateKey, session, target, amount, token, permissionId: storedId } = JSON.parse(stored);
+      const data = JSON.parse(stored);
+      addLog(`Executing ${data.token} via Smart Session...`, "info");
 
-      const sessionOwner = privateKeyToAccount(privateKey);
-      const currentId = getPermissionId(session);
-
-      if (storedId && currentId !== storedId) {
-        throw new Error("Session ID mismatch. Please clear schedule and try again.");
-      }
-
-      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
-      const pimlicoClient = createPimlicoClient({ transport: http(PIMLICO_URL), entryPoint: { address: entryPoint07Address, version: "0.7" } });
-
-      const safeAccount = await getSafe7579SessionAccount(
-        publicClient,
-        selectedNestedSafeAddr as Hex,
-        session,
-        async (hash) => (sessionOwner as any).sign({ hash })
-      );
-
-      const smartClient = createSmartAccountClient({
-        account: safeAccount,
-        chain: ACTIVE_CHAIN,
-        bundlerTransport: http(PIMLICO_URL),
-        paymaster: pimlicoClient,
-        userOperation: { estimateFeesPerGas: async () => (await pimlicoClient.getUserOperationGasPrice()).fast },
-      });
-
-      addLog(`Executing ${token} via Smart Session...`, "info");
-
-      let executionPayload;
-
-      if (token === 'USDC') {
-        const decimals = TOKENS.USDC.decimals;
-        const value = parseUnits(amount, decimals);
-        const calldata = encodeFunctionData({
-          abi: ERC20_ABI,
-          functionName: "transfer",
-          args: [target as Address, value]
-        });
-
-        executionPayload = {
-          to: USDC_ADDRESS as Address,
-          value: 0n,
-          data: calldata
-        };
-      } else {
-        executionPayload = {
-          to: target as Address,
-          value: parseEther(amount),
-          data: "0x" as Hex
-        };
-      }
-
-      const hash = await smartClient.sendTransaction(executionPayload);
+      const hash = await executeAutomatedSchedule(selectedNestedSafeAddr, data);
 
       addLog(`Schedule Executed! TX: ${hash}`, "success");
       handleClearSchedule();
-
     } catch (e: any) {
-      const niceMessage = formatError(e);
-      addLog(niceMessage, "error");
+      addLog(formatError(e), "error");
     } finally {
       setLoading(false);
     }
@@ -918,142 +789,30 @@ const App: React.FC = () => {
       return;
     }
 
-    if (selectedToken === 'ETH') {
-      addLog("Recurring allowances only support USDC in this demo.", "error");
-      return;
-    }
-
     setLoading(true);
-
     try {
-      // --- 1. SETUP / CHECKS ---
-      addLog(`Checking on-chain status for ${selectedNestedSafeAddr.slice(0, 8)}...`, "info");
-
-      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
-      const targetSafe = selectedNestedSafeAddr as Address;
-      const adapterAddr = SAFE_7579_ADAPTER_ADDRESS.toLowerCase();
-
-      const [isModuleEnabled, rawFallback] = await Promise.all([
-        publicClient.readContract({
-          address: targetSafe,
-          abi: SAFE_ABI,
-          functionName: "isModuleEnabled",
-          args: [SAFE_7579_ADAPTER_ADDRESS]
-        }).catch(() => false),
-        publicClient.getStorageAt({
-          address: targetSafe,
-          slot: FALLBACK_HANDLER_STORAGE_SLOT as Hex
-        }).catch(() => "0x")
-      ]);
-
-      const currentFallback = rawFallback && rawFallback !== "0x"
-        ? `0x${rawFallback.slice(-40)}`.toLowerCase()
-        : "0x";
-
-      const batch: { to: string; value: bigint; data: string; operation: number }[] = [];
-
-      // Only add setup steps if needed
-      if (!isModuleEnabled) {
-        addLog("Bundling first-time 7579 setup...", "info");
-        batch.push({
-          to: targetSafe, value: 0n, operation: 0,
-          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "enableModule", args: [SAFE_7579_ADAPTER_ADDRESS] })
-        });
-
-        const initData = encodeFunctionData({
-          abi: ADAPTER_7579_ABI,
-          functionName: "initializeAccount",
-          args: [
-            [{ module: SMART_SESSIONS_VALIDATOR_ADDRESS, initData: "0x", moduleType: 1n }],
-            { registry: "0x0000000000000000000000000000000000000000", attesters: [], threshold: 0 }
-          ]
-        });
-        batch.push({
-          to: SAFE_7579_ADAPTER_ADDRESS, value: 0n, operation: 0,
-          data: concat([initData, targetSafe])
-        });
-      }
-
-      if (currentFallback !== adapterAddr) {
-        addLog("Updating Fallback Handler...", "info");
-        batch.push({
-          to: targetSafe, value: 0n, operation: 0,
-          data: encodeFunctionData({ abi: SAFE_ABI, functionName: "setFallbackHandler", args: [SAFE_7579_ADAPTER_ADDRESS] })
-        });
-      }
-
-      // --- 2. PREPARE SESSION ---
-      const sessionOwnerAddress = allowanceHolder as Address;
-
-      const salt = pad(toHex(Date.now()), { size: 32 }) as Hex;
-      const startUnix = Math.floor(new Date(allowanceStart).getTime() / 1000);
-
-      const val = parseInt(allowanceInterval);
-      if (isNaN(val) || val <= 0) throw new Error("Invalid interval");
-
-      let refillSeconds = 0;
-      if (allowanceUnit === 'minutes') refillSeconds = val * 60;
-      if (allowanceUnit === 'hours') refillSeconds = val * 3600;
-      if (allowanceUnit === 'days') refillSeconds = val * 86400;
-
-      const amountRaw = parseUnits(allowanceAmount, 6); // Assuming USDC
-      const tokenAddr = USDC_ADDRESS as Address;
-      const finalName = allowanceName || "Untitled Budget";
-
-      const session = createAllowanceSessionStruct(
-        sessionOwnerAddress,
-        tokenAddr,
-        amountRaw,
-        startUnix,
-        salt,
-        refillSeconds,
-        finalName,
-        allowanceHolder as Address,
-        pad("0x0", { size: 32 })
+      const { batch, log, localData } = await prepareAllowanceProposal(
+        selectedNestedSafeAddr,
+        allowanceHolder,
+        allowanceAmount,
+        selectedToken,
+        allowanceName,
+        allowanceStart,
+        allowanceInterval,
+        allowanceUnit
       );
 
-      const enableData = encodeFunctionData({
-        abi: ENABLE_SESSIONS_ABI,
-        functionName: "enableSessions",
-        args: [[session]]
-      });
+      log.forEach(l => addLog(l, "info"));
 
-      batch.push({
-        to: SMART_SESSIONS_VALIDATOR_ADDRESS, value: 0n, operation: 0,
-        data: enableData
-      });
-
-      const permissionId = getPermissionId(session);
-
-      const configId = calculateConfigId(
-        selectedNestedSafeAddr as Address,
-        permissionId,
-        tokenAddr
-      );
-
-      // --- 3. PROPOSE ---
-      const description = `Enable ${finalName}: ${allowanceAmount} ${selectedToken}`;
+      const description = `Setup 7579 + Enable Budget: ${allowanceName}`;
 
       if (batch.length > 1) {
-        await proposeTransaction(MULTI_SEND_ADDRESS, 0n, encodeMultiSend(batch), `Setup 7579 + ${description}`, 0, 1);
+        await proposeTransaction(MULTI_SEND_ADDRESS, 0n, encodeMultiSend(batch), description, 0, 1);
       } else {
-        await proposeTransaction(SMART_SESSIONS_VALIDATOR_ADDRESS, 0n, enableData, description, 0, 0);
+        await proposeTransaction(batch[0].to, 0n, batch[0].data, description, 0, 0);
       }
 
-      const newAllowance = {
-        permissionId,
-        configId,
-        signerAddress: allowanceHolder,
-        name: finalName,
-        amount: allowanceAmount,
-        token: selectedToken,
-        start: allowanceStart,
-        session,
-        type: 'recurring',
-        interval: `${allowanceInterval} ${allowanceUnit}`
-      };
-
-      const updated = [...myAllowances, newAllowance];
+      const updated = [...myAllowances, localData];
       setMyAllowances(updated);
       localStorage.setItem("my_allowances", JSON.stringify(updated));
 
@@ -1198,66 +957,24 @@ const App: React.FC = () => {
 
     try {
       addLog("Scanning blockchain for active allowances...", "info");
-      const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
-
-      // Call the View Function on the V3 Policy
-      const onChainAllowances = await publicClient.readContract({
-        address: PERIODIC_ERC20_POLICY as Address,
-        abi: PERIODIC_POLICY_ABI,
-        functionName: "getAllowances",
-        args: [selectedNestedSafeAddr as Address]
-      });
-
-      console.log("🔍 RAW ALLOWANCES FROM CHAIN:", onChainAllowances);
-      consoleLog("SCAN", "Raw Data", onChainAllowances);
-
-      const zombies: any[] = [];
-
-      for (const allowance of onChainAllowances) {
-        // Simple heuristic to detect if we own it: match name and amount
-        const isControllable = myAllowances.some(local =>
-          local.amount === formatUnits(allowance.limit, 6) &&
-          local.name === allowance.name
-        );
-
-        zombies.push({
-          ...allowance,
-          formattedLimit: formatUnits(allowance.limit, 6),
-          formattedSpent: formatUnits(allowance.amountSpent, 6),
-          isControllable
-        });
-      }
+      const zombies = await scanOnChainAllowances(selectedNestedSafeAddr, myAllowances);
 
       setZombieAllowances(zombies);
       addLog(`Scan complete. Found ${zombies.length} allowances.`, "success");
-
     } catch (e: any) {
-      addLog(`Scan failed: ${e.message}. Is the module enabled?`, "error");
+      addLog(`Scan failed: ${e.message}`, "error");
     } finally {
       setIsScanning(false);
     }
   };
 
   const handleCleanUpAllowance = async (configId: string, tokenAddress: string) => {
-    if (!selectedNestedSafeAddr) return;
     if (!window.confirm("This will permanently disable this allowance record on-chain. Continue?")) return;
-
     setLoading(true);
     try {
-      const data = encodeFunctionData({
-        abi: PERIODIC_POLICY_ABI,
-        functionName: "revokeAllowance",
-        args: [configId as Hex, tokenAddress as Address]
-      });
-
-      await proposeTransaction(
-        PERIODIC_ERC20_POLICY,
-        0n,
-        data,
-        `Clean up Allowance Record (${configId.slice(0, 6)}...)`
-      );
-
-      addLog("Cleanup proposal created! Check Queue.", "success");
+      const tx = prepareCleanupAllowance(configId, tokenAddress);
+      await proposeTransaction(tx.to, tx.value, tx.data, `Clean up Record ${configId.slice(0, 6)}...`);
+      addLog("Cleanup proposal created!", "success");
       setActiveTab('queue');
     } catch (e: any) {
       addLog(`Cleanup failed: ${e.message}`, "error");
@@ -1267,41 +984,23 @@ const App: React.FC = () => {
   };
 
   const handleRevokeAllowance = async (allowance: any) => {
-    if (!selectedNestedSafeAddr || !allowance.permissionId) return;
-
-    if (!window.confirm("Are you sure you want to revoke this key on-chain?")) return;
-
+    if (!window.confirm("Revoke this key on-chain?")) return;
     setLoading(true);
     try {
-      // 1. Encode the call to removeSession
-      const data = encodeFunctionData({
-        abi: ENABLE_SESSIONS_ABI,
-        functionName: "removeSession",
-        args: [allowance.permissionId as Hex]
-      });
+      const tx = prepareRevokeAllowance(allowance.permissionId);
+      await proposeTransaction(tx.to, tx.value, tx.data, `Revoke Key: ${allowance.permissionId.slice(0, 6)}...`);
 
-      // 2. Propose the transaction to the Queue
-      await proposeTransaction(
-        SMART_SESSIONS_VALIDATOR_ADDRESS,
-        0n,
-        data,
-        `Revoke Key: ${allowance.permissionId.slice(0, 8)}...`
-      );
-
-      // 3. Cleanup Local State immediately
+      // Cleanup local state
       const updated = myAllowances.filter(a => a.permissionId !== allowance.permissionId);
       setMyAllowances(updated);
       localStorage.setItem("my_allowances", JSON.stringify(updated));
 
-      // If this was the active signer, reset mode
       if (activeSession?.permissionId === allowance.permissionId) {
         setSignerMode('main');
         setActiveSession(null);
       }
-
-      addLog("Revocation proposed to Queue. Key removed from local list.", "success");
+      addLog("Revocation proposed.", "success");
       setActiveTab('queue');
-
     } catch (e: any) {
       addLog(`Revocation failed: ${e.message}`, "error");
     } finally {
