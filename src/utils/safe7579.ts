@@ -16,9 +16,7 @@ import {
     entryPoint07Abi,
     getUserOperationHash
 } from "viem/account-abstraction";
-
-// --- Constants ---
-export const SMART_SESSIONS_VALIDATOR_ADDRESS = "0x00000000008bdaba73cd9815d79069c247eb4bda";
+import { SMART_SESSIONS_VALIDATOR_ADDRESS } from "../config";
 
 // --- ABIs ---
 const EXECUTE_ABI = parseAbi([

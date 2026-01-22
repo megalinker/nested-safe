@@ -144,7 +144,7 @@ const App: React.FC = () => {
   // 2. Navigation & Safe State
   const [mySafes, setMySafes] = useState<StoredSafe[]>([]);
   const [myNestedSafes, setMyNestedSafes] = useState<StoredSafe[]>([]);
-  
+
   const [selectedSafeAddr, setSelectedSafeAddr] = useState<string>("");
   const [selectedNestedSafeAddr, setSelectedNestedSafeAddr] = useState<string>("");
 
@@ -250,7 +250,7 @@ const App: React.FC = () => {
     }
 
     setStoredPasskeys(loadPasskeys());
-    
+
     const storedAllowances = localStorage.getItem("my_allowances");
     if (storedAllowances) setMyAllowances(JSON.parse(storedAllowances));
   }, []);
@@ -878,7 +878,7 @@ const App: React.FC = () => {
       addLog(`🔍 Debugging Allowance: ${allowance.name}...`, "info");
       const publicClient = createPublicClient({ chain: ACTIVE_CHAIN, transport: http(PUBLIC_RPC) });
       const recalculatedConfigId = calculateConfigId(selectedNestedSafeAddr as Address, allowance.permissionId, USDC_ADDRESS as Address);
-      
+
       const data = await publicClient.readContract({
         address: PERIODIC_ERC20_POLICY as Address, abi: PERIODIC_POLICY_ABI, functionName: "getAllowance", args: [selectedNestedSafeAddr as Address, recalculatedConfigId, USDC_ADDRESS as Address]
       });
@@ -975,7 +975,7 @@ const App: React.FC = () => {
               const safe4337Pack = await getSafe4337Pack(activePasskey);
               const owners = await safe4337Pack.protocolKit.getOwners();
               const webAuthnSignerAddress = owners[0] as Address;
-              
+
               const safeMessageHash = hashTypedData({
                 domain: { chainId: ACTIVE_CHAIN.id, verifyingContract: currentAddr as Address },
                 types: { SafeMessage: [{ name: 'message', type: 'bytes' }] },
@@ -985,7 +985,7 @@ const App: React.FC = () => {
 
               const sigResult = await safe4337Pack.protocolKit.signHash(safeMessageHash);
               const rawWebAuthnSig = sigResult.data as Hex;
-              
+
               const r_auth = pad(webAuthnSignerAddress, { size: 32 });
               const s_auth = pad(toHex(65), { size: 32 });
               const v_auth = "0x00";
@@ -996,26 +996,26 @@ const App: React.FC = () => {
               const s = pad(toHex(65), { size: 32 });
               const v = "0x00";
               const len = pad(toHex(size(innerSigData)), { size: 32 });
-              
+
               return encodePacked(['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'], [r, s, v, len, innerSigData]);
             };
           }
         } else {
-           const parentSafe = mySafes.find(s => s.address.toLowerCase() === requiredSigner.toLowerCase());
-           if (parentSafe) {
-             if (loginMethod === 'thirdweb' && walletClient) {
-               signerCallback = async (hash: Hex) => {
-                 addLog(`Requesting signature on behalf of Safe ${parentSafe.name}...`, "info");
-                 return await walletClient.signTypedData({
-                   account: currentAddr as Address,
-                   domain: { chainId: ACTIVE_CHAIN.id, verifyingContract: requiredSigner as Address },
-                   types: { SafeMessage: [{ name: 'message', type: 'bytes' }] },
-                   primaryType: 'SafeMessage',
-                   message: { message: hash }
-                 });
-               };
-             }
-           }
+          const parentSafe = mySafes.find(s => s.address.toLowerCase() === requiredSigner.toLowerCase());
+          if (parentSafe) {
+            if (loginMethod === 'thirdweb' && walletClient) {
+              signerCallback = async (hash: Hex) => {
+                addLog(`Requesting signature on behalf of Safe ${parentSafe.name}...`, "info");
+                return await walletClient.signTypedData({
+                  account: currentAddr as Address,
+                  domain: { chainId: ACTIVE_CHAIN.id, verifyingContract: requiredSigner as Address },
+                  types: { SafeMessage: [{ name: 'message', type: 'bytes' }] },
+                  primaryType: 'SafeMessage',
+                  message: { message: hash }
+                });
+              };
+            }
+          }
         }
       }
 
@@ -1043,6 +1043,13 @@ const App: React.FC = () => {
       setTimeout(() => nestedSafeData.fetchData(), 4000);
 
     } catch (e: any) {
+      // --- DEBUGGING ---
+      console.error("SESSION SPEND ERROR:", e); // <--- THIS WILL SHOW THE ERROR IN CONSOLE
+
+      // Check for specific Viem/Pimlico error details
+      if (e.cause) console.error("Error Cause:", e.cause);
+      if (e.details) console.error("Error Details:", e.details);
+
       addLog(formatError(e), "error");
     } finally {
       setLoading(false);
@@ -1090,15 +1097,15 @@ const App: React.FC = () => {
       ) : (
         <div className="dashboard-container">
           {/* Extracted Sidebar */}
-          <Sidebar 
+          <Sidebar
             mySafes={mySafes}
             myNestedSafes={myNestedSafes}
             selectedSafeAddr={selectedSafeAddr}
             setSelectedSafeAddr={setSelectedSafeAddr}
             selectedNestedSafeAddr={selectedNestedSafeAddr}
             setSelectedNestedSafeAddr={(addr) => {
-                setSelectedNestedSafeAddr(addr);
-                setActiveTab('transfer');
+              setSelectedNestedSafeAddr(addr);
+              setActiveTab('transfer');
             }}
             createParentSafe={createParentSafe}
             createNestedSafe={createNestedSafe}
