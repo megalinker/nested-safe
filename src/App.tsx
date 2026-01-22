@@ -1006,13 +1006,31 @@ const App: React.FC = () => {
             if (loginMethod === 'thirdweb' && walletClient) {
               signerCallback = async (hash: Hex) => {
                 addLog(`Requesting signature on behalf of Safe ${parentSafe.name}...`, "info");
-                return await walletClient.signTypedData({
+
+                // 1. Generate EIP-712 Signature from the EOA (owner of Parent Safe)
+                const eoaSignature = await walletClient.signTypedData({
                   account: currentAddr as Address,
                   domain: { chainId: ACTIVE_CHAIN.id, verifyingContract: requiredSigner as Address },
                   types: { SafeMessage: [{ name: 'message', type: 'bytes' }] },
                   primaryType: 'SafeMessage',
                   message: { message: hash }
                 });
+
+                // 2. Wrap into a Contract Signature for OwnableValidator (EIP-1271 support)
+                // Format: [r: Owner(Safe) Addr] [s: Offset] [v: 0] [Length] [Sig]
+
+                const r = pad(requiredSigner as Address, { size: 32 }); // The Parent Safe Address
+                const s = pad(toHex(65), { size: 32 }); // Offset: 32+32+1 = 65 bytes
+                const v = "0x00";
+
+                const sigLength = size(eoaSignature);
+                const len = pad(toHex(sigLength), { size: 32 });
+
+                // Pack it all: Header (65 bytes) + Length (32 bytes) + EOA Sig
+                return encodePacked(
+                  ['bytes32', 'bytes32', 'bytes1', 'bytes32', 'bytes'],
+                  [r, s, v, len, eoaSignature]
+                );
               };
             }
           }
