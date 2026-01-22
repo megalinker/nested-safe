@@ -1155,6 +1155,8 @@ const App: React.FC = () => {
                   loading={loading}
                   isCurrentSafeOwner={isCurrentSafeOwner}
                   nestedThreshold={nestedSafeData.threshold}
+                  ethBalance={nestedSafeData.ethBalance}
+                  usdcBalance={nestedSafeData.usdcBalance}
                   handleSessionSpend={handleSessionSpend}
                   proposeTransaction={proposeTransaction}
                   addLog={addLog}

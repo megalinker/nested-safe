@@ -13,10 +13,14 @@ interface TransferTabProps {
   setRecipient: (val: string) => void;
   sendAmount: string;
   setSendAmount: (val: string) => void;
-  setScheduleAmount: (val: string) => void; // needed for token selector reset
+  setScheduleAmount: (val: string) => void;
   loading: boolean;
   isCurrentSafeOwner: boolean;
   nestedThreshold: number;
+  // New Props
+  ethBalance: string | null;
+  usdcBalance: string | null;
+  
   handleSessionSpend: () => void;
   proposeTransaction: (to: string, val: bigint, data: any, desc: string) => void;
   addLog: (msg: string, type: 'error') => void;
@@ -35,13 +39,26 @@ export const TransferTab: React.FC<TransferTabProps> = ({
   loading,
   isCurrentSafeOwner,
   nestedThreshold,
+  ethBalance,
+  usdcBalance,
   handleSessionSpend,
   proposeTransaction,
   addLog
 }) => {
   
+  // Balance Check Logic
+  const currentBalance = selectedToken === 'ETH' ? ethBalance : usdcBalance;
+  const isInsufficientBalance = currentBalance && sendAmount 
+    ? parseFloat(sendAmount) > parseFloat(currentBalance) 
+    : false;
+
   const handleTransfer = () => {
     if (!sendAmount || !recipient) return;
+
+    if (isInsufficientBalance) {
+      addLog(`Insufficient ${selectedToken} balance in Nested Safe.`, 'error');
+      return;
+    }
 
     if (signerMode === 'session') {
       // --- SESSION EXECUTION ---
@@ -78,18 +95,24 @@ export const TransferTab: React.FC<TransferTabProps> = ({
         onSelect={(t) => { setSelectedToken(t); setSendAmount(""); setScheduleAmount(""); }} 
       />
 
+      {/* Warning Badges */}
       {signerMode === 'session' && selectedToken !== activeSession.token && (
         <div style={{
-          background: 'rgba(239, 68, 68, 0.1)',
-          color: '#f87171',
-          padding: '10px',
-          borderRadius: '8px',
-          marginBottom: '15px',
-          fontSize: '0.85rem',
-          border: '1px solid rgba(239, 68, 68, 0.2)'
+          background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', padding: '10px',
+          borderRadius: '8px', marginBottom: '15px', fontSize: '0.85rem', border: '1px solid rgba(239, 68, 68, 0.2)'
         }}>
           ⚠️ This session key is authorized for <strong>{activeSession.token}</strong>,
           but you have <strong>{selectedToken}</strong> selected.
+        </div>
+      )}
+
+      {isInsufficientBalance && (
+        <div style={{
+          background: 'rgba(245, 158, 11, 0.1)', color: '#fbbf24', padding: '10px',
+          borderRadius: '8px', marginBottom: '15px', fontSize: '0.85rem', border: '1px solid rgba(245, 158, 11, 0.2)'
+        }}>
+          ⚠️ <strong>Insufficient Balance</strong><br/>
+          Nested Safe has {currentBalance} {selectedToken}. You are trying to send {sendAmount}.
         </div>
       )}
 
@@ -99,7 +122,13 @@ export const TransferTab: React.FC<TransferTabProps> = ({
       </div>
 
       <div className="input-group">
-        <label>Amount ({selectedToken})</label>
+        <div style={{display:'flex', justifyContent: 'space-between'}}>
+          <label>Amount ({selectedToken})</label>
+          <span style={{fontSize:'0.75rem', color:'var(--text-secondary)', cursor:'pointer'}} 
+                onClick={() => setSendAmount(currentBalance || "")}>
+            Max: {currentBalance || "0.0"}
+          </span>
+        </div>
         <input type="number" placeholder="0.0" value={sendAmount} onChange={e => setSendAmount(e.target.value)} />
       </div>
 
@@ -107,10 +136,12 @@ export const TransferTab: React.FC<TransferTabProps> = ({
         className="action-btn"
         style={{
           background: signerMode === 'session' ? 'var(--success)' : 'var(--primary)',
+          opacity: (loading || isInsufficientBalance) ? 0.6 : 1,
+          cursor: (loading || isInsufficientBalance) ? 'not-allowed' : 'pointer',
           boxShadow: signerMode === 'session' ? '0 0 20px rgba(16, 185, 129, 0.2)' : 'none'
         }}
         onClick={handleTransfer}
-        disabled={loading || (signerMode === 'main' && !isCurrentSafeOwner)}
+        disabled={loading || isInsufficientBalance || (signerMode === 'main' && !isCurrentSafeOwner)}
       >
         {signerMode === 'session'
           ? `Spend via Allowance (${activeSession.token})`
