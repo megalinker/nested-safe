@@ -83,7 +83,7 @@ const formatError = (error: any): string => {
   // Smart Account (Entrypoint) Revert Codes
   if (msg.includes("AA23")) {
     if (msg.includes("0xacfdb444") || msg.includes("0xd1f90918")) {
-      return "⛔ Policy Violation: Usage limit exceeded or time window not active.";
+      return "⛔ Policy Violation.";
     }
     if (msg.includes("AA22")) {
       return "⚠️ Session Expired: The validity period for this key has ended.";
@@ -964,12 +964,15 @@ const App: React.FC = () => {
         if (!currentAddr) throw new Error("No wallet connected");
 
         if (currentAddr.toLowerCase() === requiredSigner.toLowerCase()) {
+          // --- EOA SIGNATURE (Mainnet) ---
           if (loginMethod === 'thirdweb' && walletClient) {
             signerCallback = async (hash: Hex) => {
               addLog("Requesting signature from wallet...", "info");
               return await walletClient.signMessage({ account: currentAddr as Address, message: { raw: hash } });
             };
-          } else if (loginMethod === 'passkey' && activePasskey) {
+          }
+          // --- PASSKEY DIRECT SIGNATURE ---
+          else if (loginMethod === 'passkey' && activePasskey) {
             signerCallback = async (hash: Hex) => {
               addLog("Requesting Direct Passkey signature...", "info");
               const safe4337Pack = await getSafe4337Pack(activePasskey);
@@ -1003,6 +1006,7 @@ const App: React.FC = () => {
         } else {
           const parentSafe = mySafes.find(s => s.address.toLowerCase() === requiredSigner.toLowerCase());
           if (parentSafe) {
+            // --- SMART CONTRACT SIGNATURE (Nested) ---
             if (loginMethod === 'thirdweb' && walletClient) {
               signerCallback = async (hash: Hex) => {
                 addLog(`Requesting signature on behalf of Safe ${parentSafe.name}...`, "info");
@@ -1061,13 +1065,7 @@ const App: React.FC = () => {
       setTimeout(() => nestedSafeData.fetchData(), 4000);
 
     } catch (e: any) {
-      // --- DEBUGGING ---
-      console.error("SESSION SPEND ERROR:", e); // <--- THIS WILL SHOW THE ERROR IN CONSOLE
-
-      // Check for specific Viem/Pimlico error details
-      if (e.cause) console.error("Error Cause:", e.cause);
-      if (e.details) console.error("Error Details:", e.details);
-
+      console.error("SESSION SPEND ERROR:", e);
       addLog(formatError(e), "error");
     } finally {
       setLoading(false);
